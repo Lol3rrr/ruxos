@@ -11,6 +11,7 @@
 //!
 //! # TODO
 //! * Dynamically adjust nodes in cluster
+//! * Implement some more optimizations (flexible quorums)
 //!
 //! Reference:
 //! * [Arxiv](https://arxiv.org/pdf/1802.07000.pdf)
@@ -63,12 +64,17 @@ pub trait Cluster<ID, V, MD> {
 /// ```rust
 /// # use ruxos::caspaxos;
 /// // Create a new Proposer with the ID 1
-/// let mut proposer = caspaxos::ProposeClient::new(1u8);
+/// let mut proposer = caspaxos::ProposeClient::<u8, u64>::new(1u8);
 /// ```
-#[derive(Debug)]
-pub struct ProposeClient<ID> {
+pub struct ProposeClient<ID, V> {
     proposer: internals::Proposer<ID>,
     config: config::ProposerConfig,
+    extra: ClientExtras<V>,
+}
+
+#[derive(Debug)]
+struct ClientExtras<V> {
+    round_trip: Option<(V, u64)>,
 }
 
 /// The Error returned when trying to propose an Operation to the Cluster using the
@@ -116,7 +122,20 @@ where
     }
 }
 
-impl<ID> ProposeClient<ID>
+impl<ID, V> Debug for ProposeClient<ID, V>
+where
+    ID: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProposeClient")
+            .field("proposer", &self.proposer)
+            .field("config", &self.config)
+            .field("extras", &())
+            .finish()
+    }
+}
+
+impl<ID, V> ProposeClient<ID, V>
 where
     ID: Ord + Clone + Debug,
 {
@@ -132,24 +151,35 @@ where
     /// ```rust
     /// # use ruxos::caspaxos::ProposeClient;
     /// // Create a Propose Client with the ID 13
-    /// let proposer = ProposeClient::new(13u8);
+    /// let proposer = ProposeClient::<u8, u64>::new(13u8);
     /// ```
     pub fn new(id: ID) -> Self {
+        let config = config::ProposerConfig::basic();
+
+        let extra = ClientExtras { round_trip: None };
+
         Self {
             proposer: internals::Proposer::new(id),
-            config: config::ProposerConfig::basic(),
+            config,
+            extra,
         }
     }
 
     /// Creates a new [`ProposeClient`], just like [`ProposeClient::new`]
     pub fn with_config(id: ID, conf: config::ProposerConfig) -> Self {
+        let extra = ClientExtras { round_trip: None };
+
         Self {
             proposer: internals::Proposer::new(id),
             config: conf,
+            extra,
         }
     }
 
     /// Propose an Update to the Cluster
+    ///
+    /// The provided update function may be executed even when the entire operation is not
+    /// successful.
     ///
     /// # Note
     /// If the Operation fails with [`ProposeError::PrepareConflict`] or [`ProposeError::AcceptConflict`]
@@ -159,7 +189,7 @@ where
         feature = "tracing",
         tracing::instrument(skip(cluster, func, metadata))
     )]
-    pub async fn propose<'c, 'md, V, F, C, MD>(
+    pub async fn propose<'c, 'md, F, C, MD>(
         &mut self,
         cluster: &'c C,
         func: F,
@@ -178,60 +208,78 @@ where
             .quorum(cluster_size / 2 + 1)
             .ok_or(ProposeError::ObtainingQuorum)?;
 
-        let mut proposal = self.proposer.propose::<V>(cluster_size / 2 + 1);
-
-        let propose = proposal.message();
-        quorum
-            .send(msgs::Message {
-                ballot: proposal.ballot(),
-                content: msgs::ProposerMessage::Prepare(propose.owned()),
-                metadata,
-            })
-            .await
-            .map_err(|e| ProposeError::SendingMessage(e))?;
-
-        #[cfg(feature = "tracing")]
-        tracing::trace!("Waiting for Promise Responses");
-
-        while let Ok(resp) = quorum.try_recv().await {
-            if resp.ballot < proposal.ballot() {
+        let mut proposal = match self.extra.round_trip.take() {
+            Some((pvalue, pballot)) => {
                 #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    resp_ballot = resp.ballot,
-                    proposal_ballot = proposal.ballot(),
-                    resp_type = match resp.content {
-                        msgs::AcceptorMessage::Promise(_) => "promise",
-                        msgs::AcceptorMessage::Accepted(_) => "accepted",
-                    },
-                    "Received old message for different ballot for Prepare"
-                );
+                tracing::trace!("Attemping one-round trip optimization");
 
-                continue;
+                let n_value = func(Some(pvalue));
+
+                self.proposer
+                    .accept_propose(cluster_size / 2 + 1, n_value, pballot)
             }
+            None => {
+                let mut proposal = self.proposer.propose::<V>(cluster_size / 2 + 1);
 
-            match resp.content {
-                msgs::AcceptorMessage::Promise(pmsg) => {
-                    match proposal.process(pmsg) {
-                        internals::ProcessResult::Ready => break,
-                        internals::ProcessResult::Pending => {}
-                        internals::ProcessResult::Conflict { existing } => {
-                            self.proposer.update_count(existing + 1);
+                let propose = proposal.message();
+                quorum
+                    .send(msgs::Message {
+                        ballot: proposal.ballot(),
+                        content: msgs::ProposerMessage::Prepare(propose.owned()),
+                        metadata,
+                    })
+                    .await
+                    .map_err(|e| ProposeError::SendingMessage(e))?;
 
-                            return Err(ProposeError::PrepareConflict(func));
+                #[cfg(feature = "tracing")]
+                tracing::trace!("Waiting for Promise Responses");
+
+                while let Ok(resp) = quorum.try_recv().await {
+                    if resp.ballot < proposal.ballot() {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(
+                            resp_ballot = resp.ballot,
+                            proposal_ballot = proposal.ballot(),
+                            resp_type = match resp.content {
+                                msgs::AcceptorMessage::Promise(_) => "promise",
+                                msgs::AcceptorMessage::Accepted(_) => "accepted",
+                            },
+                            "Received old message for different ballot for Prepare"
+                        );
+
+                        continue;
+                    }
+
+                    match resp.content {
+                        msgs::AcceptorMessage::Promise(pmsg) => {
+                            match proposal.process(pmsg) {
+                                internals::ProcessResult::Ready => break,
+                                internals::ProcessResult::Pending => {}
+                                internals::ProcessResult::Conflict { existing } => {
+                                    self.proposer.update_count(existing + 1);
+
+                                    return Err(ProposeError::PrepareConflict(func));
+                                }
+                            };
+                        }
+                        msgs::AcceptorMessage::Accepted(_) => {
+                            return Err(ProposeError::ProtocolError {
+                                received: "Accepted".to_string(),
+                                expected: "Promise".to_string(),
+                            })
                         }
                     };
                 }
-                msgs::AcceptorMessage::Accepted(_) => {
-                    return Err(ProposeError::ProtocolError {
-                        received: "Accepted".to_string(),
-                        expected: "Promise".to_string(),
-                    })
-                }
-            };
+
+                proposal
+                    .finish(func)
+                    .ok_or(ProposeError::FailedToFinishPromisePhase)?
+            }
+        };
+
+        if self.config.one_roundtrip() {
+            proposal.with_one_trip(proposal.ballot() + 1);
         }
-        let mut proposal = proposal
-            .finish(func)
-            .ok_or(ProposeError::FailedToFinishPromisePhase)?;
 
         let accept = proposal.message();
         quorum
@@ -286,14 +334,28 @@ where
         #[cfg(feature = "tracing")]
         tracing::trace!("Finished Proposal");
 
-        proposal.finish().ok_or(ProposeError::FailedAcceptByQuorum)
+        let ballot = proposal.ballot() + 1;
+
+        let result = proposal
+            .finish()
+            .ok_or(ProposeError::FailedAcceptByQuorum)?;
+
+        if self.config.one_roundtrip() {
+            self.extra.round_trip = Some((result.clone(), ballot));
+        }
+
+        Ok(result)
     }
 
+    /// This function builds on [`ProposeClient::propose`] with automatic retrying on Conflicts
+    ///
+    /// # Note
+    /// The provided function may be called multiple times while executing the operation
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(cluster, func, metadata))
     )]
-    pub async fn propose_with_retry<'c, 'md, V, F, C, MD>(
+    pub async fn propose_with_retry<'c, 'md, F, C, MD>(
         &mut self,
         cluster: &'c C,
         func: F,
@@ -523,6 +585,46 @@ mod tests {
         rt.block_on(async {
             proposer.propose(&cluster, |_| 0, &()).await.unwrap();
         });
+        drop(cluster);
+
+        for handle in acceptor_threads {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn basic_with_oneroundtrip() {
+        let (cluster, fns) = create::<u8, usize>(3, 1.0);
+
+        let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
+
+        let mut proposer = ProposeClient::with_config(
+            0,
+            config::ProposerConfig::basic().with_roundtrip(config::OneRoundTrip::Enabled),
+        );
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = rt.block_on(async { proposer.propose(&cluster, |_| 0, &()).await.unwrap() });
+        assert_eq!(0, result);
+
+        let second_res = rt.block_on(async {
+            proposer
+                .propose(
+                    &cluster,
+                    |x| {
+                        assert_eq!(Some(0), x);
+                        1
+                    },
+                    &(),
+                )
+                .await
+                .unwrap()
+        });
+        assert_eq!(1, second_res);
+
         drop(cluster);
 
         for handle in acceptor_threads {

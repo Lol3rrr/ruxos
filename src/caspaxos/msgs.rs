@@ -53,6 +53,7 @@ where
 pub struct AcceptMessage<ID, V> {
     pub id: (u64, ID),
     pub value: V,
+    pub with_promise: Option<u64>,
 }
 
 impl<ID, V> AcceptMessage<&ID, V>
@@ -63,6 +64,7 @@ where
         AcceptMessage {
             id: (self.id.0, self.id.1.clone()),
             value: self.value,
+            with_promise: self.with_promise,
         }
     }
 }

@@ -251,7 +251,7 @@ fn handler(
         .build()
         .unwrap();
 
-    let mut proposers: HashMap<u64, ProposeClient<String>> = HashMap::new();
+    let mut proposers: HashMap<u64, ProposeClient<String, ValueType>> = HashMap::new();
 
     while let Ok(msg) = recv_rx.recv() {
         match msg.body {
@@ -263,9 +263,13 @@ fn handler(
                 MessageBody::Generate { msg_id } => {
                     let key = 0;
 
-                    let proposer = proposers
-                        .entry(key)
-                        .or_insert_with(|| ProposeClient::new(cluster.src.clone()));
+                    let proposer = proposers.entry(key).or_insert_with(|| {
+                        ProposeClient::with_config(
+                            cluster.src.clone(),
+                            caspaxos::config::ProposerConfig::basic()
+                                .with_roundtrip(caspaxos::config::OneRoundTrip::Enabled),
+                        )
+                    });
 
                     let msg = match rt.block_on(proposer.propose_with_retry(
                         &cluster,

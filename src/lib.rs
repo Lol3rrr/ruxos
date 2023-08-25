@@ -8,5 +8,7 @@ pub mod basic;
 
 pub mod caspaxos;
 
+pub mod epaxos;
+
 #[cfg(test)]
 pub mod tests;

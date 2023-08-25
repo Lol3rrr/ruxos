@@ -63,6 +63,7 @@ pub struct WaitingForPromises<ID, V> {
 pub struct WaitingForAccepts<V> {
     quorum_count: usize,
     value: V,
+    next_ballot: Option<u64>,
     had_conflict: Option<u64>,
 }
 
@@ -109,6 +110,28 @@ where
             state: WaitingForPromises {
                 quorum_count: 0,
                 highest_value: None,
+                had_conflict: None,
+            },
+        }
+    }
+
+    pub(crate) fn accept_propose<V>(
+        &mut self,
+        quorum_threshold: usize,
+        value: V,
+        ballot: u64,
+    ) -> Proposal<'_, ID, WaitingForAccepts<V>> {
+        self.counter += 1;
+        debug_assert_eq!(self.counter, ballot);
+
+        Proposal {
+            ballot,
+            proposer: self,
+            quorum_threshold,
+            state: WaitingForAccepts {
+                quorum_count: 0,
+                value,
+                next_ballot: None,
                 had_conflict: None,
             },
         }
@@ -209,6 +232,7 @@ where
             state: WaitingForAccepts {
                 quorum_count: 0,
                 value: n_value.clone(),
+                next_ballot: None,
                 had_conflict: None,
             },
         })
@@ -220,10 +244,15 @@ where
     ID: Ord + Clone,
     V: Clone,
 {
+    pub fn with_one_trip(&mut self, next_ballot: u64) {
+        self.state.next_ballot = Some(next_ballot);
+    }
+
     pub fn message(&self) -> AcceptMessage<ID, V> {
         AcceptMessage {
             id: (self.ballot, self.proposer.id.clone()),
             value: self.state.value.clone(),
+            with_promise: self.state.next_ballot,
         }
     }
 
@@ -343,7 +372,7 @@ where
             _ => {}
         };
 
-        self.promise = None;
+        self.promise = msg.with_promise.map(|ballot| (ballot, msg.id.1.clone()));
         self.accepted = Some((msg.id, msg.value));
 
         AcceptResponse::Confirm

@@ -267,7 +267,7 @@ fn handler(
         .build()
         .unwrap();
 
-    let mut proposers: HashMap<u64, ProposeClient<String>> = HashMap::new();
+    let mut proposers: HashMap<u64, ProposeClient<String, ValueType>> = HashMap::new();
 
     while let Ok(msg) = recv_rx.recv() {
         match msg.body {
