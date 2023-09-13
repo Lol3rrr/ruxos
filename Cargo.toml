@@ -11,6 +11,7 @@ default = ["serde", "tracing"]
 [dependencies]
 serde = { version = "1.0.183", default-features = false, features = ["derive"], optional = true }
 tracing = { version = "0.1.37", features = ["async-await"], optional = true }
+tokio = { version = "1.32.0", default-features = false, features = ["time"] }
 
 [dev-dependencies]
 rand = { version = "0.8.5", features = ["small_rng"] }

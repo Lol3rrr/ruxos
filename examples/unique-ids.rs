@@ -2,7 +2,10 @@
 #![feature(impl_trait_projections)]
 
 use rand::Rng;
-use ruxos::caspaxos::{self, ProposeClient};
+use ruxos::{
+    caspaxos::{self, ProposeClient},
+    retry::RetryStrategy,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -187,7 +190,7 @@ impl caspaxos::Cluster<String, ValueType, Metadata> for Cluster {
         self.nodes.len()
     }
 
-    fn quorum<'q, 's>(&'s self, size: usize) -> Option<Self::Quorum<'q>>
+    fn quorum<'q, 's>(&'s mut self, size: usize) -> Option<Self::Quorum<'q>>
     where
         's: 'q,
     {
@@ -243,7 +246,7 @@ impl<'c> caspaxos::ClusterQuorum<String, ValueType, Metadata> for Quorum<'c> {
 }
 
 fn handler(
-    cluster: Cluster,
+    mut cluster: Cluster,
     recv_rx: std::sync::mpsc::Receiver<Request>,
     send_tx: std::sync::mpsc::Sender<Response>,
 ) {
@@ -272,9 +275,12 @@ fn handler(
                     });
 
                     let msg = match rt.block_on(proposer.propose_with_retry(
-                        &cluster,
+                        &mut cluster,
                         |x| x.map(|v| v + 1).unwrap_or(0),
                         &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
                     )) {
                         Ok(value) => Response {
                             dest: msg.src,

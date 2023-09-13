@@ -11,16 +11,44 @@
 //!
 //! # TODO
 //! * Dynamically adjust nodes in cluster
-//! * Implement some more optimizations (flexible quorums)
+//!     * Custom Interface to "notify" other proposers of the changes
+//!     * Store the Acceptor count + hashes of the ids in each accept as a fall back
+//!     * Concurrent changes
+//!         * Works if only 1 new acceptor comes, as everyone tries to update to the same
+//!         configuration, one will "win" and the rest will see the correct state
+//!         * Problems if there are 2 or more nodes being added, if failure try all possible
+//!         permutations
+//! * Actually respect [`config::QuorumSize`] configuration
 //!
 //! Reference:
 //! * [Arxiv](https://arxiv.org/pdf/1802.07000.pdf)
 
 use std::fmt::Debug;
 
+use crate::retry::RetryStrategy;
+
 pub mod config;
 pub mod internals;
 pub mod msgs;
+
+/// A Cluster describing the members
+///
+/// This gives flexiblity in how the Members are managed (static, dynamic, etc.) and also in how
+/// the Communication is realized in the particular situation, as this is communication agnostic as
+/// long as you can send and receive the messages to/from the acceptors in the cluster.
+pub trait Cluster<ID, V, MD> {
+    type Quorum<'q>: ClusterQuorum<ID, V, MD>
+    where
+        Self: 'q;
+
+    /// Get the Number of Acceptors in the Cluster
+    fn size(&self) -> usize;
+
+    /// Get Quorum of Nodes, of a at least the given size, from the Cluster
+    fn quorum<'q, 's>(&'s mut self, size: usize) -> Option<Self::Quorum<'q>>
+    where
+        's: 'q;
+}
 
 /// A Quorum in the Cluster, meaning a Set of Acceptors, and a way to communicate with these nodes
 pub trait ClusterQuorum<ID, V, MD> {
@@ -38,23 +66,11 @@ pub trait ClusterQuorum<ID, V, MD> {
     ) -> Result<msgs::Message<msgs::AcceptorMessage<ID, V>, MD>, Self::Error>;
 }
 
-/// A Cluster describing the members
-///
-/// This gives flexiblity in how the Members are managed (static, dynamic, etc.) and also in how
-/// the Communication is realized in the particular situation, as this is communication agnostic as
-/// long as you can send and receive the messages to/from the acceptors in the cluster.
-pub trait Cluster<ID, V, MD> {
-    type Quorum<'q>: ClusterQuorum<ID, V, MD>
-    where
-        Self: 'q;
-
-    /// Get the Number of Acceptors in the Cluster
-    fn size(&self) -> usize;
-
-    /// Get Quorum of Nodes, of a at least the given size, from the Cluster
-    fn quorum<'q, 's>(&'s self, size: usize) -> Option<Self::Quorum<'q>>
-    where
-        's: 'q;
+/// Extends the Cluster to allow for dynamic membership changes
+pub trait DynamicCluster<ID, V, MD, N>: Cluster<ID, V, MD> {
+    /// Adds the given Node to the local cluster information
+    /// Notify the other proposers of the change in nodes
+    async fn add_and_notify(&mut self, node: N);
 }
 
 /// This provides a simpler API to use compared to [`Proposer`](internals::Proposer) and aims to
@@ -79,13 +95,16 @@ struct ClientExtras<V> {
 
 /// The Error returned when trying to propose an Operation to the Cluster using the
 /// [`ProposeClient::propose`] method
-pub enum ProposeError<QE, F> {
+pub enum ProposeError<F> {
     /// Could not get a Quorum for the Cluster
     ObtainingQuorum,
     /// Failed to send a Message to the Acceptors in the choosen Quorum
-    SendingMessage(QE),
+    SendingMessage,
     /// Received an unexpected message in the protocol
-    ProtocolError { received: String, expected: String },
+    ProtocolError {
+        received: String,
+        expected: String,
+    },
     /// Got not enough responses from Acceptors to safely advance to the next Phase of a proposal
     FailedToFinishPromisePhase,
     /// Got not enough responses from Acceptors to safely determine if the Operation was
@@ -97,16 +116,14 @@ pub enum ProposeError<QE, F> {
     /// The Proposal had a conflict with a newer Proposal and was therefore aborted, but the
     /// propose can be retried
     AcceptConflict,
+    Other(&'static str),
 }
 
-impl<QE, F> Debug for ProposeError<QE, F>
-where
-    QE: Debug,
-{
+impl<F> Debug for ProposeError<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ObtainingQuorum => f.debug_struct("ObtainingQuorum").finish(),
-            Self::SendingMessage(e) => f.debug_struct("SendingMessage").field("0", e).finish(),
+            Self::SendingMessage => f.debug_struct("SendingMessage").finish(),
             Self::ProtocolError { received, expected } => f
                 .debug_struct("ProtocolError")
                 .field("received", &received)
@@ -118,6 +135,7 @@ where
             Self::FailedAcceptByQuorum => f.debug_struct("FailedAcceptByQuorum").finish(),
             Self::PrepareConflict(_) => f.debug_struct("PrepareConflict").finish(),
             Self::AcceptConflict => f.debug_struct("AcceptConflict").finish(),
+            Self::Other(c) => f.debug_struct("Other").field("content", c).finish(),
         }
     }
 }
@@ -191,10 +209,10 @@ where
     )]
     pub async fn propose<'c, 'md, F, C, MD>(
         &mut self,
-        cluster: &'c C,
+        cluster: &'c mut C,
         func: F,
         metadata: &'md MD,
-    ) -> Result<V, ProposeError<<C::Quorum<'c> as ClusterQuorum<ID, V, MD>>::Error, F>>
+    ) -> Result<V, ProposeError<F>>
     where
         V: Clone,
         F: FnOnce(Option<V>) -> V,
@@ -203,9 +221,15 @@ where
         #[cfg(feature = "tracing")]
         tracing::trace!("Starting Propose");
 
+        // TODO
+        // Consider: Can I only send the phase 2 messages to nodes that previously responded?
+
         let cluster_size = cluster.size();
-        let mut quorum = cluster
-            .quorum(cluster_size / 2 + 1)
+        let mut quorum = (&mut *cluster)
+            .quorum(match self.config.thrifty() {
+                config::Thrifty::Minimum => cluster_size / 2 + 1,
+                config::Thrifty::AllNodes => cluster_size,
+            })
             .ok_or(ProposeError::ObtainingQuorum)?;
 
         let mut proposal = match self.extra.round_trip.take() {
@@ -229,7 +253,7 @@ where
                         metadata,
                     })
                     .await
-                    .map_err(|e| ProposeError::SendingMessage(e))?;
+                    .map_err(|e| ProposeError::SendingMessage)?;
 
                 #[cfg(feature = "tracing")]
                 tracing::trace!("Waiting for Promise Responses");
@@ -289,7 +313,7 @@ where
                 metadata,
             })
             .await
-            .map_err(|e| ProposeError::SendingMessage(e))?;
+            .map_err(|e| ProposeError::SendingMessage)?;
 
         #[cfg(feature = "tracing")]
         tracing::trace!("Waiting for Accept Responses");
@@ -305,6 +329,23 @@ where
                         msgs::AcceptorMessage::Accepted(_) => "accepted",
                     },
                     "Received old message for different ballot for Accept",
+                );
+
+                continue;
+            }
+
+            if resp.ballot == proposal.ballot()
+                && matches!(&resp.content, msgs::AcceptorMessage::Promise(_))
+            {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    resp_ballot = resp.ballot,
+                    proposal_ballot = proposal.ballot(),
+                    resp_type = match resp.content {
+                        msgs::AcceptorMessage::Promise(_) => "promise",
+                        msgs::AcceptorMessage::Accepted(_) => "accepted",
+                    },
+                    "Received old promise message for same ballot",
                 );
 
                 continue;
@@ -353,27 +394,30 @@ where
     /// The provided function may be called multiple times while executing the operation
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(skip(cluster, func, metadata))
+        tracing::instrument(skip(cluster, func, metadata, retry))
     )]
     pub async fn propose_with_retry<'c, 'md, F, C, MD>(
         &mut self,
-        cluster: &'c C,
+        cluster: &'c mut C,
         func: F,
         metadata: &'md MD,
-    ) -> Result<V, ProposeError<<C::Quorum<'c> as ClusterQuorum<ID, V, MD>>::Error, F>>
+        retry: impl Into<RetryStrategy<'_>>,
+    ) -> Result<V, ProposeError<F>>
     where
         V: Clone,
         F: Fn(Option<V>) -> V,
         C: Cluster<ID, V, MD>,
     {
+        let mut retry = retry.into();
+
         loop {
-            match self.propose(cluster, |val| func(val), metadata).await {
+            match self.propose(&mut *cluster, |val| func(val), metadata).await {
                 Ok(v) => return Ok(v),
                 Err(e) => match e {
                     ProposeError::PrepareConflict(_) => {}
                     ProposeError::AcceptConflict => {}
                     ProposeError::ObtainingQuorum => return Err(ProposeError::ObtainingQuorum),
-                    ProposeError::SendingMessage(e) => return Err(ProposeError::SendingMessage(e)),
+                    ProposeError::SendingMessage => return Err(ProposeError::SendingMessage),
                     ProposeError::ProtocolError { received, expected } => {
                         return Err(ProposeError::ProtocolError { received, expected })
                     }
@@ -383,22 +427,47 @@ where
                     ProposeError::FailedAcceptByQuorum => {
                         return Err(ProposeError::FailedAcceptByQuorum)
                     }
+                    ProposeError::Other(c) => return Err(ProposeError::Other(c)),
                 },
             };
 
+            if !retry.should_retry() {
+                return Err(ProposeError::Other(
+                    "Stopping retries according to retry strategy",
+                ));
+            }
+
             tracing::trace!("Retrying after conflict");
+            retry.wait().await;
         }
+    }
+}
+
+impl<ID, V> ProposeClient<ID, V>
+where
+    ID: Ord + Clone + Debug,
+{
+    pub async fn expand(&mut self) {
+        todo!()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use self::cluster::create;
 
     use super::*;
 
     mod cluster {
-        use std::{sync::Mutex, time::Duration};
+        use std::{
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Arc, Mutex,
+            },
+            time::Duration,
+        };
 
         use rand::{Rng, SeedableRng};
 
@@ -414,6 +483,8 @@ mod tests {
                 )>,
             >,
             rng: Mutex<rand::rngs::SmallRng>,
+            pub send_calls: Arc<AtomicUsize>,
+            pub send_msgs: Arc<AtomicUsize>,
         }
 
         pub struct TestQuorum<ID, V> {
@@ -431,6 +502,8 @@ mod tests {
             receiver: crate::tests::mpsc::FallibleReceiver<
                 caspaxos::msgs::Message<caspaxos::msgs::AcceptorMessage<ID, V>, ()>,
             >,
+            send_calls: Arc<AtomicUsize>,
+            send_msgs: Arc<AtomicUsize>,
         }
 
         impl<ID, V> caspaxos::ClusterQuorum<ID, V, ()> for TestQuorum<ID, V>
@@ -444,10 +517,14 @@ mod tests {
                 &mut self,
                 msg: caspaxos::msgs::Message<caspaxos::msgs::ProposerMessage<ID, V>, &'md ()>,
             ) -> Result<(), Self::Error> {
+                self.send_calls.fetch_add(1, Ordering::Relaxed);
+
                 for entry in self.entires.iter_mut() {
-                    entry
-                        .send((msg.clone().map_meta(|_| ()), self.sender.clone()))
-                        .unwrap();
+                    // TODO
+                    // Reconsider
+                    let _ = entry.send((msg.clone().map_meta(|_| ()), self.sender.clone()));
+
+                    self.send_msgs.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -486,19 +563,25 @@ mod tests {
                 self.acceptors.len()
             }
 
-            fn quorum<'q, 's>(&'s self, size: usize) -> Option<Self::Quorum<'q>>
+            fn quorum<'q, 's>(&'s mut self, size: usize) -> Option<Self::Quorum<'q>>
             where
                 's: 'q,
             {
                 let (tx, rx) = crate::tests::mpsc::queue(1.0, 0);
 
                 let mut rng = self.rng.lock().unwrap();
-                let offset = rng.gen_range(0..(self.acceptors.len() - size));
+                let offset = if size >= self.acceptors.len() {
+                    0
+                } else {
+                    rng.gen_range(0..(self.acceptors.len() - size))
+                };
 
                 Some(TestQuorum {
                     entires: self.acceptors[offset..size + offset].to_vec(),
                     sender: tx,
                     receiver: rx,
+                    send_calls: self.send_calls.clone(),
+                    send_msgs: self.send_msgs.clone(),
                 })
             }
         }
@@ -547,12 +630,13 @@ mod tests {
                                 }
                             };
 
-                            tx.send(caspaxos::msgs::Message {
+                            // TODO
+                            // Reconsider
+                            let _ = tx.send(caspaxos::msgs::Message {
                                 ballot: msg.ballot,
                                 content: resp,
                                 metadata: (),
-                            })
-                            .unwrap();
+                            });
                         }
                     };
 
@@ -564,6 +648,8 @@ mod tests {
                 TestCluster {
                     acceptors: acceptor_txs,
                     rng: Mutex::new(rand::rngs::SmallRng::seed_from_u64(0)),
+                    send_calls: Arc::new(AtomicUsize::new(0)),
+                    send_msgs: Arc::new(AtomicUsize::new(0)),
                 },
                 acceptor_fns,
             )
@@ -572,7 +658,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let (cluster, fns) = create::<u8, usize>(3, 1.0);
+        let (mut cluster, fns) = create::<u8, usize>(3, 1.0);
 
         let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
 
@@ -583,7 +669,7 @@ mod tests {
             .unwrap();
 
         rt.block_on(async {
-            proposer.propose(&cluster, |_| 0, &()).await.unwrap();
+            proposer.propose(&mut cluster, |_| 0, &()).await.unwrap();
         });
         drop(cluster);
 
@@ -594,7 +680,7 @@ mod tests {
 
     #[test]
     fn basic_with_oneroundtrip() {
-        let (cluster, fns) = create::<u8, usize>(3, 1.0);
+        let (mut cluster, fns) = create::<u8, usize>(3, 1.0);
 
         let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
 
@@ -607,13 +693,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let result = rt.block_on(async { proposer.propose(&cluster, |_| 0, &()).await.unwrap() });
+        let result =
+            rt.block_on(async { proposer.propose(&mut cluster, |_| 0, &()).await.unwrap() });
         assert_eq!(0, result);
+
+        assert_eq!(2, cluster.send_calls.load(Ordering::Relaxed));
 
         let second_res = rt.block_on(async {
             proposer
                 .propose(
-                    &cluster,
+                    &mut cluster,
                     |x| {
                         assert_eq!(Some(0), x);
                         1
@@ -625,6 +714,25 @@ mod tests {
         });
         assert_eq!(1, second_res);
 
+        assert_eq!(3, cluster.send_calls.load(Ordering::Relaxed));
+
+        let third_res = rt.block_on(async {
+            proposer
+                .propose(
+                    &mut cluster,
+                    |x| {
+                        assert_eq!(Some(1), x);
+                        2
+                    },
+                    &(),
+                )
+                .await
+                .unwrap()
+        });
+        assert_eq!(2, third_res);
+
+        assert_eq!(4, cluster.send_calls.load(Ordering::Relaxed));
+
         drop(cluster);
 
         for handle in acceptor_threads {
@@ -633,8 +741,99 @@ mod tests {
     }
 
     #[test]
+    fn basic_with_thrifty_minimal() {
+        let (mut cluster, fns) = create::<u8, usize>(3, 1.0);
+
+        let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
+
+        let mut proposer = ProposeClient::with_config(
+            0,
+            config::ProposerConfig::basic().with_thrifty(config::Thrifty::Minimum),
+        );
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result =
+            rt.block_on(async { proposer.propose(&mut cluster, |_| 0, &()).await.unwrap() });
+        assert_eq!(0, result);
+
+        assert_eq!(4, cluster.send_msgs.load(Ordering::Relaxed));
+
+        let second_res = rt.block_on(async {
+            proposer
+                .propose(
+                    &mut cluster,
+                    |x| {
+                        assert_eq!(Some(0), x);
+                        1
+                    },
+                    &(),
+                )
+                .await
+                .unwrap()
+        });
+        assert_eq!(1, second_res);
+
+        assert_eq!(8, cluster.send_msgs.load(Ordering::Relaxed));
+
+        drop(cluster);
+
+        for handle in acceptor_threads {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn basic_with_thrifty_all() {
+        let (mut cluster, fns) = create::<u8, usize>(3, 1.0);
+
+        let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
+
+        let mut proposer = ProposeClient::with_config(
+            0,
+            config::ProposerConfig::basic().with_thrifty(config::Thrifty::AllNodes),
+        );
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result =
+            rt.block_on(async { proposer.propose(&mut cluster, |_| 0, &()).await.unwrap() });
+        assert_eq!(0, result);
+
+        assert_eq!(6, cluster.send_msgs.load(Ordering::Relaxed));
+
+        let second_res = rt.block_on(async {
+            proposer
+                .propose(
+                    &mut cluster,
+                    |x| {
+                        assert_eq!(Some(0), x);
+                        1
+                    },
+                    &(),
+                )
+                .await
+                .unwrap()
+        });
+        assert_eq!(1, second_res);
+
+        assert_eq!(12, cluster.send_msgs.load(Ordering::Relaxed));
+
+        drop(cluster);
+
+        for handle in acceptor_threads {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "reason"]
     fn failability() {
-        let (cluster, fns) = create::<u8, usize>(99, 0.75);
+        let (mut cluster, fns) = create::<u8, usize>(99, 0.75);
 
         let acceptor_threads: Vec<_> = fns.into_iter().map(|afn| std::thread::spawn(afn)).collect();
 
@@ -649,7 +848,7 @@ mod tests {
 
             let mut failures = 0;
             for i in 0..ATTEMPTS {
-                match proposer.propose(&cluster, |_| i, &()).await {
+                match proposer.propose(&mut cluster, |_| i, &()).await {
                     Ok(v) => {
                         assert_eq!(v, i);
                     }

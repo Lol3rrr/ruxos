@@ -6,6 +6,7 @@ use rand::Rng;
 use ruxos::caspaxos::{self};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
+#[derive(Debug, Clone)]
 struct TestCluster {
     nodes: Vec<mpsc::Sender<Message>>,
 }
@@ -50,7 +51,7 @@ impl caspaxos::Cluster<u8, usize, ()> for TestCluster {
         self.nodes.len()
     }
 
-    fn quorum<'q, 's>(&'s self, size: usize) -> Option<Self::Quorum<'q>>
+    fn quorum<'q, 's>(&'s mut self, size: usize) -> Option<Self::Quorum<'q>>
     where
         's: 'q,
     {
@@ -116,7 +117,7 @@ fn acceptor(idx: usize, recv: mpsc::Receiver<Message>) {
 }
 
 #[tracing::instrument(skip(recv, cluster))]
-fn proposer(idx: u8, recv: mpsc::Receiver<Operation>, cluster: &TestCluster) {
+fn proposer(idx: u8, recv: mpsc::Receiver<Operation>, cluster: &mut TestCluster) {
     let mut proposer = caspaxos::ProposeClient::new(idx);
 
     tracing::info!("Started Proposer {}", idx);
@@ -203,9 +204,9 @@ fn main() {
             .map(|idx| {
                 let (tx, rx) = mpsc::channel();
 
-                let acceptor_ref = &cluster;
+                let mut acceptor_ref = cluster.clone();
 
-                scope.spawn(move || proposer(idx, rx, acceptor_ref));
+                scope.spawn(move || proposer(idx, rx, &mut acceptor_ref));
 
                 tx
             })

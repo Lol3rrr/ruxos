@@ -2,7 +2,10 @@
 #![feature(impl_trait_projections)]
 
 use rand::Rng;
-use ruxos::caspaxos::{self, ProposeClient};
+use ruxos::{
+    caspaxos::{self, ProposeClient},
+    retry::RetryStrategy,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -203,7 +206,7 @@ impl caspaxos::Cluster<String, ValueType, Metadata> for Cluster {
         self.nodes.len()
     }
 
-    fn quorum<'q, 's>(&'s self, size: usize) -> Option<Self::Quorum<'q>>
+    fn quorum<'q, 's>(&'s mut self, size: usize) -> Option<Self::Quorum<'q>>
     where
         's: 'q,
     {
@@ -259,7 +262,7 @@ impl<'c> caspaxos::ClusterQuorum<String, ValueType, Metadata> for Quorum<'c> {
 }
 
 fn handler(
-    cluster: Cluster,
+    mut cluster: Cluster,
     recv_rx: std::sync::mpsc::Receiver<Request>,
     send_tx: std::sync::mpsc::Sender<Response>,
 ) {
@@ -277,14 +280,22 @@ fn handler(
                     panic!("Unexpected Init Message");
                 }
                 MessageBody::Read { key, msg_id } => {
-                    let proposer = proposers
-                        .entry(key)
-                        .or_insert_with(|| ProposeClient::new(cluster.src.clone()));
+                    let proposer = proposers.entry(key).or_insert_with(|| {
+                        ProposeClient::with_config(
+                            cluster.src.clone(),
+                            caspaxos::config::ProposerConfig::basic()
+                                .with_roundtrip(caspaxos::config::OneRoundTrip::Enabled)
+                                .with_thrifty(caspaxos::config::Thrifty::AllNodes),
+                        )
+                    });
 
                     let msg = match rt.block_on(proposer.propose_with_retry(
-                        &cluster,
+                        &mut cluster,
                         |x| x.unwrap_or(None),
                         &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
                     )) {
                         Ok(Some(value)) => Response {
                             dest: msg.src,
@@ -325,9 +336,12 @@ fn handler(
                         .or_insert_with(|| ProposeClient::new(cluster.src.clone()));
 
                     let msg = match rt.block_on(proposer.propose_with_retry(
-                        &cluster,
+                        &mut cluster,
                         |_| Some(value.clone()),
                         &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
                     )) {
                         Ok(val) => {
                             assert_eq!(val, Some(value));
@@ -367,7 +381,7 @@ fn handler(
 
                     let worked = AtomicBool::new(false);
                     let propose_res = rt.block_on(proposer.propose_with_retry(
-                        &cluster,
+                        &mut cluster,
                         |val| {
                             if val == Some(Some(from)) {
                                 worked.store(true, Ordering::SeqCst);
@@ -378,6 +392,9 @@ fn handler(
                             }
                         },
                         &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
                     ));
 
                     let msg = match propose_res {
