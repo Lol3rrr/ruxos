@@ -94,6 +94,7 @@ where
         // Wait for floor(N/2) PreAcceptOk responses
         let responses = {
             let target = cluster_size / 2 + 1;
+            #[cfg(feature = "tracing")]
             tracing::trace!("Waiting for {} PreAcceptOk Responses", target);
 
             let mut tmp = Vec::with_capacity(target);
@@ -111,6 +112,7 @@ where
             tmp
         };
 
+        #[cfg(feature = "tracing")]
         tracing::debug!("Respones: {:?}", responses);
 
         // Check if all the responses have the same sequence number and dependencies
@@ -234,6 +236,7 @@ where
             tmp
         };
 
+        #[cfg(feature = "tracing")]
         tracing::debug!("Responses: {:?}", resps);
 
         // 27.
@@ -266,6 +269,7 @@ where
                     },
                 );
 
+        #[cfg(feature = "tracing")]
         tracing::debug!("R: {:?}", r);
 
         // 28.

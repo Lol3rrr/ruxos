@@ -441,6 +441,7 @@ where
                 ));
             }
 
+            #[cfg(feature = "tracing")]
             tracing::trace!("Retrying after conflict");
             retry.wait().await;
         }
