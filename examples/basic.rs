@@ -3,7 +3,7 @@
 use std::{sync::mpsc, time::Duration};
 
 use rand::Rng;
-use ruxos::caspaxos::{self};
+use ruxos::caspaxos::{self, internals::ClusterHash};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 #[derive(Debug, Clone)]
@@ -46,6 +46,10 @@ impl caspaxos::ClusterQuorum<u8, usize, ()> for TestQuorum<u8, usize> {
 
 impl caspaxos::Cluster<u8, usize, ()> for TestCluster {
     type Quorum<'q> = TestQuorum<u8, usize>;
+
+    fn hash(&self) -> caspaxos::internals::ClusterHash {
+        ClusterHash(0)
+    }
 
     fn size(&self) -> usize {
         self.nodes.len()

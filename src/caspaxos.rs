@@ -10,14 +10,6 @@
 //! a consistend state after a while.
 //!
 //! # TODO
-//! * Dynamically adjust nodes in cluster
-//!     * Custom Interface to "notify" other proposers of the changes
-//!     * Store the Acceptor count + hashes of the ids in each accept as a fall back
-//!     * Concurrent changes
-//!         * Works if only 1 new acceptor comes, as everyone tries to update to the same
-//!         configuration, one will "win" and the rest will see the correct state
-//!         * Problems if there are 2 or more nodes being added, if failure try all possible
-//!         permutations
 //! * Actually respect [`config::QuorumSize`] configuration
 //!
 //! Reference:
@@ -40,6 +32,13 @@ pub trait Cluster<ID, V, MD> {
     type Quorum<'q>: ClusterQuorum<ID, V, MD>
     where
         Self: 'q;
+
+    /// Calculate a Hash for the current Cluster configuration
+    ///
+    /// # Note
+    /// This has to be deterministic and only based on the Set of Nodes in the Cluster and not the
+    /// Order itself.
+    fn hash(&self) -> internals::ClusterHash;
 
     /// Get the Number of Acceptors in the Cluster
     fn size(&self) -> usize;
@@ -67,10 +66,12 @@ pub trait ClusterQuorum<ID, V, MD> {
 }
 
 /// Extends the Cluster to allow for dynamic membership changes
-pub trait DynamicCluster<ID, V, MD, N>: Cluster<ID, V, MD> {
-    /// Adds the given Node to the local cluster information
-    /// Notify the other proposers of the change in nodes
-    async fn add_and_notify(&mut self, node: N);
+pub trait DynamicCluster<ID, V, MD, N, DMD>: Cluster<ID, V, MD> {
+    type AddHandle;
+
+    fn add(&mut self, node: N) -> Self::AddHandle;
+
+    async fn notify<'md>(&mut self, metadata: &'md DMD);
 }
 
 /// This provides a simpler API to use compared to [`Proposer`](internals::Proposer) and aims to
@@ -224,6 +225,7 @@ where
         // TODO
         // Consider: Can I only send the phase 2 messages to nodes that previously responded?
 
+        let cluster_hash = cluster.hash();
         let cluster_size = cluster.size();
         let mut quorum = (&mut *cluster)
             .quorum(match self.config.thrifty() {
@@ -240,10 +242,12 @@ where
                 let n_value = func(Some(pvalue));
 
                 self.proposer
-                    .accept_propose(cluster_size / 2 + 1, n_value, pballot)
+                    .accept_propose(cluster_size / 2 + 1, n_value, pballot, cluster_hash)
             }
             None => {
-                let mut proposal = self.proposer.propose::<V>(cluster_size / 2 + 1);
+                let mut proposal = self
+                    .proposer
+                    .propose::<V>(cluster_size / 2 + 1, cluster_hash);
 
                 let propose = proposal.message();
                 quorum
@@ -253,7 +257,7 @@ where
                         metadata,
                     })
                     .await
-                    .map_err(|e| ProposeError::SendingMessage)?;
+                    .map_err(|_e| ProposeError::SendingMessage)?;
 
                 #[cfg(feature = "tracing")]
                 tracing::trace!("Waiting for Promise Responses");
@@ -313,7 +317,7 @@ where
                 metadata,
             })
             .await
-            .map_err(|e| ProposeError::SendingMessage)?;
+            .map_err(|_e| ProposeError::SendingMessage)?;
 
         #[cfg(feature = "tracing")]
         tracing::trace!("Waiting for Accept Responses");
@@ -447,8 +451,161 @@ impl<ID, V> ProposeClient<ID, V>
 where
     ID: Ord + Clone + Debug,
 {
-    pub async fn expand(&mut self) {
-        todo!()
+    pub async fn add_node<'md, 'dmd, C, MD, N, DMD>(
+        &mut self,
+        cluster: &mut C,
+        metadata: &'md MD,
+        dynamic_md: &'dmd DMD,
+        node: N,
+    ) -> Result<(), C::AddHandle>
+    where
+        V: Clone + Default,
+        C: DynamicCluster<ID, V, MD, N, DMD>,
+    {
+        let old_hash = cluster.hash();
+
+        let add_handle = cluster.add(node);
+        let new_hash = cluster.hash();
+
+        let mut proposal = self.proposer.propose::<V>(cluster.size() / 2 + 2, old_hash);
+
+        let mut quorum = match cluster.quorum(cluster.size() / 2 + 2) {
+            Some(q) => q,
+            None => return Err(add_handle),
+        };
+
+        let propose = proposal.message();
+        if let Err(_e) = quorum
+            .send(msgs::Message {
+                ballot: proposal.ballot(),
+                content: msgs::ProposerMessage::Prepare(propose.owned()),
+                metadata,
+            })
+            .await
+        {
+            return Err(add_handle);
+        };
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!("Waiting for Promise Responses");
+
+        while let Ok(resp) = quorum.try_recv().await {
+            if resp.ballot < proposal.ballot() {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    resp_ballot = resp.ballot,
+                    proposal_ballot = proposal.ballot(),
+                    resp_type = match resp.content {
+                        msgs::AcceptorMessage::Promise(_) => "promise",
+                        msgs::AcceptorMessage::Accepted(_) => "accepted",
+                    },
+                    "Received old message for different ballot for Prepare"
+                );
+
+                continue;
+            }
+
+            match resp.content {
+                msgs::AcceptorMessage::Promise(pmsg) => {
+                    match proposal.process(pmsg) {
+                        internals::ProcessResult::Ready => break,
+                        internals::ProcessResult::Pending => {}
+                        internals::ProcessResult::Conflict { existing } => {
+                            self.proposer.update_count(existing + 1);
+
+                            return Err(add_handle);
+                        }
+                    };
+                }
+                msgs::AcceptorMessage::Accepted(_) => {
+                    return Err(add_handle);
+                }
+            };
+        }
+
+        let mut proposal = match proposal.finish_with_cluster(|d| d.unwrap_or_default(), new_hash) {
+            Some(p) => p,
+            None => return Err(add_handle),
+        };
+
+        let accept = proposal.message();
+        if let Err(_e) = quorum
+            .send(msgs::Message {
+                ballot: proposal.ballot(),
+                content: msgs::ProposerMessage::Accept(accept),
+                metadata,
+            })
+            .await
+        {
+            return Err(add_handle);
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!("Waiting for Accept Responses");
+
+        while let Ok(resp) = quorum.try_recv().await {
+            if resp.ballot < proposal.ballot() {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    resp_ballot = resp.ballot,
+                    proposal_ballot = proposal.ballot(),
+                    resp_type = match resp.content {
+                        msgs::AcceptorMessage::Promise(_) => "promise",
+                        msgs::AcceptorMessage::Accepted(_) => "accepted",
+                    },
+                    "Received old message for different ballot for Accept",
+                );
+
+                continue;
+            }
+
+            if resp.ballot == proposal.ballot()
+                && matches!(&resp.content, msgs::AcceptorMessage::Promise(_))
+            {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    resp_ballot = resp.ballot,
+                    proposal_ballot = proposal.ballot(),
+                    resp_type = match resp.content {
+                        msgs::AcceptorMessage::Promise(_) => "promise",
+                        msgs::AcceptorMessage::Accepted(_) => "accepted",
+                    },
+                    "Received old promise message for same ballot",
+                );
+
+                continue;
+            }
+
+            match resp.content {
+                msgs::AcceptorMessage::Promise(_) => {
+                    return Err(add_handle);
+                }
+                msgs::AcceptorMessage::Accepted(amsg) => {
+                    match proposal.process(amsg) {
+                        internals::ProcessResult::Ready => break,
+                        internals::ProcessResult::Pending => {}
+                        internals::ProcessResult::Conflict { existing } => {
+                            self.proposer.update_count(existing + 1);
+
+                            return Err(add_handle);
+                        }
+                    };
+                }
+            };
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!("Finished Proposal");
+
+        if let None = proposal.finish() {
+            return Err(add_handle);
+        }
+
+        drop(quorum);
+
+        cluster.notify(dynamic_md).await;
+
+        Ok(())
     }
 }
 
@@ -558,6 +715,11 @@ mod tests {
             V: Clone + 'static,
         {
             type Quorum<'q> = TestQuorum<ID, V>;
+
+            fn hash(&self) -> caspaxos::internals::ClusterHash {
+                // TODO
+                caspaxos::internals::ClusterHash(0)
+            }
 
             fn size(&self) -> usize {
                 self.acceptors.len()
@@ -831,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reason"]
+    #[ignore = "Unreliable"]
     fn failability() {
         let (mut cluster, fns) = create::<u8, usize>(99, 0.75);
 

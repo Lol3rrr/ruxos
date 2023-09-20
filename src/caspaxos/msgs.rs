@@ -3,6 +3,8 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::internals::ClusterHash;
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct Message<C, MD> {
@@ -53,6 +55,7 @@ where
 pub struct AcceptMessage<ID, V> {
     pub id: (u64, ID),
     pub value: V,
+    pub cluster: ClusterHash,
     pub with_promise: Option<u64>,
 }
 
@@ -64,6 +67,7 @@ where
         AcceptMessage {
             id: (self.id.0, self.id.1.clone()),
             value: self.value,
+            cluster: self.cluster,
             with_promise: self.with_promise,
         }
     }
@@ -80,7 +84,7 @@ pub enum AcceptorMessage<ID, V> {
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum PrepareResponse<ID, V> {
     Conflict { proposed: (u64, ID), existing: u64 },
-    Promise(Option<((u64, ID), V)>),
+    Promise(Option<((u64, ID), V, ClusterHash)>),
 }
 
 #[derive(Debug)]

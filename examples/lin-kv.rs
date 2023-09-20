@@ -3,7 +3,7 @@
 
 use rand::Rng;
 use ruxos::{
-    caspaxos::{self, ProposeClient},
+    caspaxos::{self, internals::ClusterHash, ProposeClient},
     retry::RetryStrategy,
 };
 use serde::{Deserialize, Serialize};
@@ -201,6 +201,10 @@ struct Quorum<'c> {
 
 impl caspaxos::Cluster<String, ValueType, Metadata> for Cluster {
     type Quorum<'q> = Quorum<'q>;
+
+    fn hash(&self) -> caspaxos::internals::ClusterHash {
+        ClusterHash(0)
+    }
 
     fn size(&self) -> usize {
         self.nodes.len()
