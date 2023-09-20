@@ -16,7 +16,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
 pub(crate) struct Ballot<Id>(u64, u64, Id);
 
 impl<Id> Ballot<Id> {
@@ -26,7 +26,7 @@ impl<Id> Ballot<Id> {
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
 struct CmdOp<Id, O, T>
 where
     O: Operation<T>,
@@ -41,7 +41,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
 pub enum OpState {
     PreAccepted,
     Accepted,
@@ -49,7 +49,7 @@ pub enum OpState {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
 pub enum CmdState<V> {
     PreAccepted,
     Accepted,
@@ -75,7 +75,7 @@ pub enum TryExecuteError<Id, V> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
 pub(super) struct Interference<Id> {
     node: Id,
     instance: u64,

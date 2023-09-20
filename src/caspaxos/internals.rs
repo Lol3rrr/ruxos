@@ -75,7 +75,7 @@
 //! for the configuration and always send it between Proposers and Acceptors, however I dont think
 //! that this overhead is of any real signifcants as it is only a 64bit number
 
-use super::msgs::*;
+use crate::caspaxos::msgs::*;
 
 /// A Hash to "identify" a specific cluster configuration
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

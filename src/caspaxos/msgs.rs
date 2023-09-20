@@ -1,12 +1,9 @@
 //! The Messages being exchanged between the [`Acceptor`](super::internals::Acceptor)s and [`Proposer`](super::internals::Proposer)s.
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use super::internals::ClusterHash;
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Message<C, MD> {
     pub ballot: u64,
     pub content: C,
@@ -27,14 +24,14 @@ impl<C, MD> Message<C, MD> {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum ProposerMessage<ID, V> {
     Prepare(PrepareMessage<ID>),
     Accept(AcceptMessage<ID, V>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct PrepareMessage<ID> {
     pub ballot_number: (u64, ID),
 }
@@ -51,7 +48,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct AcceptMessage<ID, V> {
     pub id: (u64, ID),
     pub value: V,
@@ -74,21 +71,21 @@ where
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum AcceptorMessage<ID, V> {
     Promise(PrepareResponse<ID, V>),
     Accepted(AcceptResponse<ID>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum PrepareResponse<ID, V> {
     Conflict { proposed: (u64, ID), existing: u64 },
     Promise(Option<((u64, ID), V, ClusterHash)>),
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum AcceptResponse<ID> {
     Conflict { proposed: (u64, ID), existing: u64 },
     Confirm,
