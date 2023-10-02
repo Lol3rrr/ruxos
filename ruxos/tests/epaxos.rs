@@ -42,14 +42,21 @@ impl<Id, O> epaxos::ResponseReceiver<Id, O> for TestReceiver {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum TestOperation {
     Write { key: u64, value: u64 },
     Read { key: u64 },
+    Noop,
 }
 
 impl epaxos::Operation<HashMap<u64, u64>> for TestOperation {
     type ApplyResult = Option<u64>;
+
+    const TRANSITIVE: bool = false;
+
+    fn noop() -> Self {
+        Self::Noop
+    }
 
     fn interfere(&self, other: &Self) -> bool {
         match (self, other) {
@@ -57,6 +64,7 @@ impl epaxos::Operation<HashMap<u64, u64>> for TestOperation {
             (Self::Write { key: fkey, .. }, Self::Read { key: skey }) => fkey == skey,
             (Self::Read { key: fkey }, Self::Write { key: skey, .. }) => fkey == skey,
             (Self::Read { key: fkey }, Self::Read { key: skey }) => fkey == skey,
+            _ => true,
         }
     }
 
@@ -68,6 +76,7 @@ impl epaxos::Operation<HashMap<u64, u64>> for TestOperation {
                 Some(*value)
             }
             Self::Read { key } => state.get(key).copied(),
+            Self::Noop => None,
         }
     }
 }
@@ -107,7 +116,7 @@ fn basic() {
 
         println!("Commited read");
 
-        let execute_handle = handle.execute().unwrap();
+        let execute_handle = handle.try_execute().unwrap();
 
         let result = execute_handle.await.unwrap();
 
@@ -180,7 +189,7 @@ fn local_cluster() {
 
         tracing::info!("Commited write");
 
-        handle.execute().unwrap().await.unwrap();
+        handle.try_execute().unwrap().await.unwrap();
     });
 
     for (id, node) in [node1, node2, node3].into_iter().enumerate() {
@@ -194,7 +203,7 @@ fn local_cluster() {
 
             tracing::info!("Commited write");
 
-            let res = handle.execute().unwrap().await.unwrap();
+            let res = handle.try_execute().unwrap().await.unwrap();
 
             assert_eq!(Some(1), res, "Reading on Node {}", id);
         });
@@ -272,7 +281,7 @@ fn local_cluster_with_partition() {
 
         tracing::info!("Commited write");
 
-        handle.execute().unwrap().await.unwrap();
+        handle.try_execute().unwrap().await.unwrap();
 
         tracing::info!("Write was executed");
     });
@@ -287,16 +296,16 @@ fn local_cluster_with_partition() {
 
         tracing::info!("Commited Read");
 
-        let res = handle.execute().unwrap().await;
+        let res = handle.try_execute().unwrap().await;
 
         assert!(res.is_err());
 
-        let (node, instance) = match res {
-            Err(TryExecuteError::UnknownCommand(node, instance)) => (node, instance),
+        let instance = match res {
+            Err(TryExecuteError::UnknownCommand(instance)) => instance,
             _ => unreachable!(),
         };
 
-        node3.explicit_prepare(&mut cluster, node, instance).await;
+        node3.explicit_prepare(&mut cluster, instance).await;
     });
 
     tracing::info!("Done");

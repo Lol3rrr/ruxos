@@ -12,7 +12,9 @@ pub struct CommitHandle<Id, O, T>
 where
     O: Operation<T>,
 {
+    node: Id,
     instance: u64,
+    op: O,
     ipc_sender: ipc::IPCSender<Id, O, T>,
 }
 
@@ -39,21 +41,33 @@ where
 impl<Id, O, T> CommitHandle<Id, O, T>
 where
     O: Operation<T> + 'static,
-    Id: 'static,
+    Id: Clone + 'static,
     T: 'static,
 {
-    pub(super) fn committed(sender: ipc::IPCSender<Id, O, T>, instance: u64) -> Self {
+    pub(super) fn committed(
+        sender: ipc::IPCSender<Id, O, T>,
+        node: Id,
+        instance: u64,
+        op: O,
+    ) -> Self {
         Self {
+            node,
             instance,
+            op,
             ipc_sender: sender,
         }
     }
 
-    pub fn execute(self) -> Result<ExecutionHandle<Id, O, T>, ()> {
+    pub fn op(&self) -> &O {
+        &self.op
+    }
+
+    pub fn try_execute(&self) -> Result<ExecutionHandle<Id, O, T>, ()> {
         let waker = Arc::new(AtomicWaker::new());
 
         // Send Execution command to internal node
         let rx = match self.ipc_sender.send(ipc::Request::Execute {
+            node: self.node.clone(),
             instance: self.instance,
             waker: Some(waker.clone()),
         }) {

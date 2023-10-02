@@ -5,7 +5,6 @@
 //! `lein run -- test --workload {} --rate {} --time-limit {} --bin {}`
 
 #![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
 
 pub mod retry;
 

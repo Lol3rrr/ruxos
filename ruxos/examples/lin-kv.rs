@@ -1,5 +1,4 @@
 #![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
 
 use rand::Rng;
 use ruxos::{
@@ -10,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{BufRead, Write},
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
@@ -20,7 +22,7 @@ struct Metadata {
     key: u64,
 }
 
-type ValueType = u64;
+type ValueType = Option<u64>;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Deserialize, Serialize)]
 struct Key(u64);
@@ -82,8 +84,17 @@ enum MessageBody {
         node_id: String,
         node_ids: Vec<String>,
     },
-    #[serde(rename = "generate")]
-    Generate { msg_id: u64 },
+    #[serde(rename = "read")]
+    Read { key: u64, msg_id: u64 },
+    #[serde(rename = "write")]
+    Write { key: u64, value: u64, msg_id: u64 },
+    #[serde(rename = "cas")]
+    Cas {
+        key: u64,
+        from: u64,
+        to: u64,
+        msg_id: u64,
+    },
 }
 
 fn receiver(
@@ -147,8 +158,12 @@ type Response = Message<ResponseBody>;
 enum ResponseBody {
     #[serde(rename = "init_ok")]
     InitOk { in_reply_to: u64 },
-    #[serde(rename = "generate_ok")]
-    GenerateOk { in_reply_to: u64, id: u64 },
+    #[serde(rename = "read_ok")]
+    ReadOk { value: u64, in_reply_to: u64 },
+    #[serde(rename = "write_ok")]
+    WriteOk { in_reply_to: u64 },
+    #[serde(rename = "cas_ok")]
+    CasOk { in_reply_to: u64 },
     #[serde(rename = "error")]
     Error {
         in_reply_to: u64,
@@ -267,32 +282,41 @@ fn handler(
                     // Respond to Init message
                     panic!("Unexpected Init Message");
                 }
-                MessageBody::Generate { msg_id } => {
-                    let key = 0;
-
+                MessageBody::Read { key, msg_id } => {
                     let proposer = proposers.entry(key).or_insert_with(|| {
                         ProposeClient::with_config(
                             cluster.src.clone(),
                             caspaxos::config::ProposerConfig::basic()
-                                .with_roundtrip(caspaxos::config::OneRoundTrip::Enabled),
+                                .with_roundtrip(caspaxos::config::OneRoundTrip::Enabled)
+                                .with_thrifty(caspaxos::config::Thrifty::AllNodes),
                         )
                     });
 
                     let msg = match rt.block_on(proposer.propose_with_retry(
                         &mut cluster,
-                        |x| x.map(|v| v + 1).unwrap_or(0),
+                        |x| x.unwrap_or(None),
                         &Metadata { key },
                         RetryStrategy::new(
                             &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
                         ),
                     )) {
-                        Ok(value) => Response {
+                        Ok(Some(value)) => Response {
                             dest: msg.src,
                             src: msg.dest,
                             id: None,
-                            body: Combination::Body(ResponseBody::GenerateOk {
+                            body: Combination::Body(ResponseBody::ReadOk {
+                                value,
                                 in_reply_to: msg_id,
-                                id: value,
+                            }),
+                        },
+                        Ok(None) => Response {
+                            dest: msg.src,
+                            src: msg.dest,
+                            id: None,
+                            body: Combination::Body(ResponseBody::Error {
+                                in_reply_to: msg_id,
+                                code: 20,
+                                text: format!("Key not found: {:?}", key),
                             }),
                         },
                         Err(e) => Response {
@@ -303,6 +327,127 @@ fn handler(
                                 in_reply_to: msg_id,
                                 code: 13,
                                 text: format!("Reading Key: {:?} - {:?}", key, e),
+                            }),
+                        },
+                    };
+
+                    send_tx.send(msg).unwrap();
+                }
+                MessageBody::Write { key, value, msg_id } => {
+                    let proposer = proposers
+                        .entry(key)
+                        .or_insert_with(|| ProposeClient::new(cluster.src.clone()));
+
+                    let msg = match rt.block_on(proposer.propose_with_retry(
+                        &mut cluster,
+                        |_| Some(value.clone()),
+                        &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
+                    )) {
+                        Ok(val) => {
+                            assert_eq!(val, Some(value));
+
+                            Response {
+                                dest: msg.src,
+                                src: msg.dest,
+                                id: None,
+                                body: Combination::Body(ResponseBody::WriteOk {
+                                    in_reply_to: msg_id,
+                                }),
+                            }
+                        }
+                        Err(e) => Response {
+                            dest: msg.src,
+                            src: msg.dest,
+                            id: None,
+                            body: Combination::Body(ResponseBody::Error {
+                                in_reply_to: msg_id,
+                                code: 13,
+                                text: format!("Writing Key: {:?}->{:?} - {:?}", key, value, e),
+                            }),
+                        },
+                    };
+
+                    send_tx.send(msg).unwrap();
+                }
+                MessageBody::Cas {
+                    key,
+                    from,
+                    to,
+                    msg_id,
+                } => {
+                    let proposer = proposers
+                        .entry(key)
+                        .or_insert_with(|| ProposeClient::new(cluster.src.clone()));
+
+                    let worked = AtomicBool::new(false);
+                    let propose_res = rt.block_on(proposer.propose_with_retry(
+                        &mut cluster,
+                        |val| {
+                            if val == Some(Some(from)) {
+                                worked.store(true, Ordering::SeqCst);
+                                Some(to.clone())
+                            } else {
+                                worked.store(false, Ordering::SeqCst);
+                                val.unwrap_or(None)
+                            }
+                        },
+                        &Metadata { key },
+                        RetryStrategy::new(
+                            &mut ruxos::retry::FilteredBackoff::unlimited_no_backoff(),
+                        ),
+                    ));
+
+                    let msg = match propose_res {
+                        Ok(Some(val)) if worked.load(Ordering::SeqCst) => {
+                            assert_eq!(val, to);
+
+                            Response {
+                                dest: msg.src,
+                                src: msg.dest,
+                                id: None,
+                                body: Combination::Body(ResponseBody::CasOk {
+                                    in_reply_to: msg_id,
+                                }),
+                            }
+                        }
+                        Ok(Some(val)) => {
+                            assert_ne!(val, from);
+
+                            Response {
+                                dest: msg.src,
+                                src: msg.dest,
+                                id: None,
+                                body: Combination::Body(ResponseBody::Error {
+                                    in_reply_to: msg_id,
+                                    code: 22,
+                                    text: format!(
+                                        "Mismatched from value, tried CAS ({:?} -> {:?}) but saw {:?}",
+                                        from, to, val
+                                    ),
+                                }),
+                            }
+                        }
+                        Ok(None) => Response {
+                            dest: msg.src,
+                            src: msg.dest,
+                            id: None,
+                            body: Combination::Body(ResponseBody::Error {
+                                in_reply_to: msg_id,
+                                code: 20,
+                                text: format!("Key not found: {:?}", key),
+                            }),
+                        },
+                        Err(e) => Response {
+                            dest: msg.src,
+                            src: msg.dest,
+                            id: None,
+                            body: Combination::Body(ResponseBody::Error {
+                                in_reply_to: msg_id,
+                                code: 13,
+                                text: format!("CAS Key: {:?} {:?}->{:?} - {:?}", key, from, to, e),
                             }),
                         },
                     };

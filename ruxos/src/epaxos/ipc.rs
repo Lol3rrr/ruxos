@@ -1,9 +1,13 @@
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use atomic_waker::AtomicWaker;
 
 use super::{
-    listener::{Ballot, Interference, NodeMessage, TryExecuteError},
+    dependencies::Dependencies,
+    listener::{Ballot, CmdOp, NodeMessage, TryExecuteError},
     msgs, Operation,
 };
 
@@ -15,21 +19,29 @@ where
     pub resp: tokio::sync::oneshot::Sender<Response<Id, O, T>>,
 }
 
+#[derive(Debug)]
 pub(super) enum Request<Id, O> {
     PreAccept {
         op: O,
+        node: Id,
         instance: u64,
         ballot: Ballot<Id>,
     },
     Accept {
+        op: O,
+        node: Id,
         instance: u64,
-        n_deps: Vec<Interference<Id>>,
+        n_deps: Dependencies<Id>,
         n_seq: u64,
+        ballot: Ballot<Id>,
     },
     Commit {
+        node: Id,
         instance: u64,
+        ballot: Ballot<Id>,
     },
     Execute {
+        node: Id,
         instance: u64,
         waker: Option<Arc<AtomicWaker>>,
     },
@@ -43,10 +55,12 @@ pub(super) enum Request<Id, O> {
         op: O,
         ballot: Ballot<Id>,
         seq: u64,
-        deps: Vec<Interference<Id>>,
+        deps: Dependencies<Id>,
     },
+    GetStorage,
 }
 
+#[derive(Debug)]
 pub(super) enum Response<Id, O, T>
 where
     O: Operation<T>,
@@ -57,6 +71,45 @@ where
     Executed(Result<O::ApplyResult, TryExecuteError<Id, O::ApplyResult>>),
     ExplicitPrepare(msgs::Prepare<Id>, msgs::PrepareResp<Id, O>),
     ExplicitCommitted(msgs::Commit<Id, O>),
+    Nack,
+    Storage(HashMap<Id, BTreeMap<u64, CmdOp<Id, O, T>>>),
+}
+
+impl<Id, O, T> PartialEq for Response<Id, O, T>
+where
+    Id: PartialEq,
+    O: Operation<T> + PartialEq,
+    T: PartialEq,
+    O::ApplyResult: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::PreAcceptOk(pa1, pok1), Self::PreAcceptOk(pa2, pok2)) => {
+                pa1 == pa2 && pok1 == pok2
+            }
+            (Self::Accepted(a1), Self::Accepted(a2)) => a1 == a2,
+            (Self::Committed(c1), Self::Committed(c2)) => c1 == c2,
+            (Self::Executed(e1), Self::Executed(e2)) => e1 == e2,
+            (Self::ExplicitPrepare(p1, pr1), Self::ExplicitPrepare(p2, pr2)) => {
+                p1 == p2 && pr1 == pr2
+            }
+            (Self::ExplicitCommitted(ec1), Self::ExplicitCommitted(ec2)) => ec1 == ec2,
+            (Self::Nack, Self::Nack) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+impl<Id, O, T> Message<Id, O, T>
+where
+    O: Operation<T>,
+{
+    pub fn new(
+        req: Request<Id, O>,
+        resp: tokio::sync::oneshot::Sender<Response<Id, O, T>>,
+    ) -> Self {
+        Message { req, resp }
+    }
 }
 
 #[derive(Debug)]
@@ -90,8 +143,15 @@ where
     > {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        self.0
-            .send(NodeMessage::Ipc(Message { req: op, resp: tx }))?;
+        self.0.send(NodeMessage::Ipc {
+            req: Message { req: op, resp: tx },
+            #[cfg(feature = "tracing")]
+            span: {
+                let span = tracing::span!(tracing::Level::INFO, "ipc_send");
+                span.follows_from(tracing::Span::current());
+                span
+            },
+        })?;
 
         Ok(rx)
     }
@@ -110,12 +170,14 @@ where
     pub async fn preaccept(
         &self,
         op: O,
+        node: Id,
         instance: u64,
         ballot: Ballot<Id>,
     ) -> Result<(msgs::PreAccept<Id, O>, msgs::PreAcceptOk<Id, O>), ()> {
         let rx = self
             .send(Request::PreAccept {
                 op,
+                node,
                 instance,
                 ballot,
             })
@@ -131,15 +193,21 @@ where
 
     pub async fn accept(
         &self,
+        node: Id,
         instance: u64,
-        n_deps: Vec<Interference<Id>>,
+        op: O,
+        n_deps: Dependencies<Id>,
         n_seq: u64,
+        ballot: Ballot<Id>,
     ) -> Result<msgs::Accept<Id, O>, ()> {
         let rx = self
             .send(Request::Accept {
+                op,
+                node,
                 instance,
                 n_deps,
                 n_seq,
+                ballot,
             })
             .map_err(|e| ())?;
 
@@ -151,8 +219,19 @@ where
         }
     }
 
-    pub async fn commit(&self, instance: u64) -> Result<msgs::Commit<Id, O>, ()> {
-        let rx = self.send(Request::Commit { instance }).map_err(|e| ())?;
+    pub async fn commit(
+        &self,
+        node: Id,
+        instance: u64,
+        ballot: Ballot<Id>,
+    ) -> Result<msgs::Commit<Id, O>, ()> {
+        let rx = self
+            .send(Request::Commit {
+                node,
+                instance,
+                ballot,
+            })
+            .map_err(|e| ())?;
 
         let resp = rx.await.map_err(|e| ())?;
 
