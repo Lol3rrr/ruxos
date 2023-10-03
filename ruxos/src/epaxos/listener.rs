@@ -189,34 +189,56 @@ where
         }
     }
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    pub fn poll(&mut self) {
-        while let Ok(msg) = self.inputs.try_recv() {
-            match msg {
-                NodeMessage::Ipc {
-                    req,
-                    #[cfg(feature = "tracing")]
-                    span,
-                } => {
-                    #[cfg(feature = "tracing")]
-                    let _guard = span.enter();
+    fn poll_handle(&mut self, msg: NodeMessage<Id, O, T>) {
+        match msg {
+            NodeMessage::Ipc {
+                req,
+                #[cfg(feature = "tracing")]
+                span,
+            } => {
+                #[cfg(feature = "tracing")]
+                let _guard = span.enter();
 
-                    self.handle_ipc(req);
-                }
-                NodeMessage::External { req, tx } => {
-                    let resp = match self.handle_msg(req) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!("Handling Message");
-                            continue;
-                        }
-                    };
-
-                    if let Err(e) = tx.send(resp) {
-                        tracing::error!("Sending Response");
+                let resp = match self.handle_ipc(req.req) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("Handling IPC");
+                        return;
                     }
+                };
+
+                if let Err(_e) = req.resp.send(resp) {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("Sending Response");
                 }
-            };
+            }
+            NodeMessage::External { req, tx } => {
+                let resp = match self.handle_msg(req) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("Handling Message");
+                        return;
+                    }
+                };
+
+                if let Err(e) = tx.send(resp) {
+                    tracing::error!("Sending Response");
+                }
+            }
+        };
+    }
+
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
+    pub async fn poll(&mut self) {
+        while let Some(msg) = self.inputs.recv().await {
+            self.poll_handle(msg);
+        }
+    }
+
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
+    pub fn try_poll(&mut self) {
+        while let Ok(msg) = self.inputs.try_recv() {
+            self.poll_handle(msg);
         }
     }
 
@@ -369,8 +391,8 @@ where
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, req)))]
-    fn handle_ipc(&mut self, req: ipc::Message<Id, O, T>) {
-        let resp = match req.req {
+    fn handle_ipc(&mut self, req: ipc::Request<Id, O>) -> Result<ipc::Response<Id, O, T>, ()> {
+        match req {
             ipc::Request::PreAccept {
                 op: operation,
                 node,
@@ -413,8 +435,8 @@ where
                 };
 
                 match self.receive_preaccept(msg.clone()) {
-                    Ok(resp) => ipc::Response::PreAcceptOk(msg, resp),
-                    Err(_e) => ipc::Response::Nack,
+                    Ok(resp) => Ok(ipc::Response::PreAcceptOk(msg, resp)),
+                    Err(_e) => Ok(ipc::Response::Nack),
                 }
             }
             ipc::Request::Accept {
@@ -434,13 +456,13 @@ where
                     Some(n) => n,
                     None => {
                         tracing::error!("Cant accept Unknown Command");
-                        return;
+                        return Err(());
                     }
                 };
 
                 if ballot < node.ballot {
                     tracing::trace!(?ballot, current = ?node.ballot, "Disregarding outdated ballot");
-                    return;
+                    return Ok(ipc::Response::Nack);
                 }
 
                 // assert!(node.op == op);
@@ -463,13 +485,13 @@ where
                 node.seq = n_seq;
                 node.state = CmdState::Accepted;
 
-                ipc::Response::Accepted(msgs::Accept {
+                Ok(ipc::Response::Accepted(msgs::Accept {
                     op: node.op.clone(),
                     seq: node.seq,
                     deps: node.deps.clone(),
                     node: (node_id, instance),
                     ballot: node.ballot.clone(),
-                })
+                }))
             }
             ipc::Request::Commit {
                 node,
@@ -489,7 +511,7 @@ where
                     Some(t) => {
                         if ballot < t.ballot {
                             tracing::error!("Outdated Ballot");
-                            return;
+                            return Ok(ipc::Response::Nack);
                         } else {
                             t.state = CmdState::Commited;
                             msgs::Commit {
@@ -504,7 +526,7 @@ where
                     None => todo!(),
                 };
 
-                ipc::Response::Committed(inner)
+                Ok(ipc::Response::Committed(inner))
             }
             ipc::Request::Execute {
                 node,
@@ -536,7 +558,7 @@ where
                 #[cfg(feature = "tracing")]
                 tracing::trace!("Attempted execute: {}", value.is_ok());
 
-                ipc::Response::Executed(value)
+                Ok(ipc::Response::Executed(value))
             }
             ipc::Request::ExplicitPrepare { instance, node } => {
                 let (msg, resp) = match self.cmds.get(&node).map(|c| c.get(&instance)).flatten() {
@@ -562,7 +584,7 @@ where
                     }
                 };
 
-                ipc::Response::ExplicitPrepare(msg, resp)
+                Ok(ipc::Response::ExplicitPrepare(msg, resp))
             }
             ipc::Request::ExplicitCommit {
                 instance,
@@ -610,20 +632,15 @@ where
                     _ => {}
                 };
 
-                ipc::Response::ExplicitCommitted(msgs::Commit {
+                Ok(ipc::Response::ExplicitCommitted(msgs::Commit {
                     seq,
                     op,
                     deps,
                     node: (node, instance),
                     ballot,
-                })
+                }))
             }
-            ipc::Request::GetStorage => ipc::Response::Storage(self.cmds.clone()),
-        };
-
-        if let Err(_e) = req.resp.send(resp) {
-            #[cfg(feature = "tracing")]
-            tracing::error!("Sending Response");
+            ipc::Request::GetStorage => Ok(ipc::Response::Storage(self.cmds.clone())),
         }
     }
 
@@ -659,7 +676,6 @@ where
         let n_deps = {
             let mut tmp = msg.deps.clone();
 
-            tmp.union_mut(self.dependencies(&msg.node.0, msg.node.1, &msg.op));
             match self
                 .cmds
                 .get(&msg.node.0)
@@ -669,7 +685,9 @@ where
                 Some(c) => {
                     tmp.union_mut(c.deps.iter().cloned());
                 }
-                None => {}
+                None => {
+                    tmp.union_mut(self.dependencies(&msg.node.0, msg.node.1, &msg.op));
+                }
             };
 
             tmp
@@ -898,7 +916,7 @@ where
 
         if &prepare.ballot >= &cmd.ballot {
             // tracing::info!("Updating Ballot {:?} -> {:?}", cmd.ballot, prepare.ballot);
-            // cmd.ballot = prepare.ballot;
+            cmd.ballot = prepare.ballot;
 
             return Ok(msgs::PrepareResp::Ok(msgs::PrepareOk {
                 op: cmd.op.clone(),
@@ -997,12 +1015,34 @@ mod tests {
             })
             .unwrap();
 
-            $listener.poll();
+            $listener.try_poll();
 
             req_rx.try_recv().unwrap()
         }};
         ($listener:ident, $tx:ident, $req:expr, $expected:expr) => {{
             let resp = ipc_request_response!($listener, $tx, $req);
+
+            assert_eq!($expected, resp);
+
+            resp
+        }};
+    }
+
+    macro_rules! msg_request_response {
+        ($listener:ident, $tx:ident, $req:expr) => {{
+            let (req_tx, mut req_rx) = tokio::sync::oneshot::channel();
+            $tx.send(NodeMessage::External {
+                req: $req,
+                tx: req_tx,
+            })
+            .unwrap();
+
+            $listener.try_poll();
+
+            req_rx.try_recv().unwrap()
+        }};
+        ($listener:ident, $tx:ident, $req:expr, $expected:expr) => {{
+            let resp = msg_request_response!($listener, $tx, $req);
 
             assert_eq!($expected, resp);
 
@@ -1190,6 +1230,165 @@ mod tests {
                 deps: Dependencies::new(),
                 node: (0, 0),
                 ballot: Ballot::initial(0, 0),
+            })
+        );
+    }
+
+    #[test]
+    fn preaccept_prepare() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut listener = NodeListener::<i32, TestOp, usize>::new(0, rx, tx.clone(), 0usize);
+
+        ipc_request_response!(
+            listener,
+            tx,
+            ipc::Request::PreAccept {
+                op: TestOp::Set(0),
+                node: 0,
+                instance: 0,
+                ballot: Ballot::initial(0, 0)
+            },
+            ipc::Response::PreAcceptOk(
+                msgs::PreAccept {
+                    op: TestOp::Set(0),
+                    seq: 1,
+                    deps: Dependencies::new(),
+                    node: (0, 0),
+                    ballot: Ballot::initial(0, 0),
+                },
+                msgs::PreAcceptOk {
+                    op: TestOp::Set(0),
+                    seq: 1,
+                    deps: Dependencies::new(),
+                    node: 0,
+                    instance: 0,
+                }
+            )
+        );
+
+        msg_request_response!(
+            listener,
+            tx,
+            msgs::Request::Prepare(msgs::Prepare {
+                node: 0,
+                instance: 0,
+                ballot: Ballot(0, 1, 1),
+            }),
+            msgs::Response::PrepareResp(msgs::PrepareResp::Ok(msgs::PrepareOk {
+                op: TestOp::Set(0),
+                state: OpState::PreAccepted,
+                seq: 1,
+                instance: 0,
+                node: 0,
+                deps: Dependencies::new(),
+                ballot: Ballot(0, 1, 1),
+            }))
+        );
+
+        // TODO
+        // Is this the correct behaviour?
+        ipc_request_response!(
+            listener,
+            tx,
+            ipc::Request::Accept {
+                op: TestOp::Set(0),
+                node: 0,
+                instance: 0,
+                n_deps: Dependencies::new(),
+                n_seq: 1,
+                ballot: Ballot(0, 0, 0)
+            },
+            ipc::Response::Nack
+        );
+        ipc_request_response!(
+            listener,
+            tx,
+            ipc::Request::Commit {
+                node: 0,
+                instance: 0,
+                ballot: Ballot(0, 0, 0)
+            },
+            ipc::Response::Nack
+        );
+    }
+
+    #[test]
+    fn preaccept_prepare_preaccept() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut listener = NodeListener::<i32, TestOp, usize>::new(0, rx, tx.clone(), 0usize);
+
+        ipc_request_response!(
+            listener,
+            tx,
+            ipc::Request::PreAccept {
+                op: TestOp::Read,
+                node: 0,
+                instance: 0,
+                ballot: Ballot::initial(0, 0)
+            }
+        );
+
+        msg_request_response!(
+            listener,
+            tx,
+            msgs::Request::PreAccept(msgs::PreAccept {
+                op: TestOp::Set(1),
+                seq: 1,
+                deps: Dependencies::new(),
+                node: (1, 0),
+                ballot: Ballot::initial(0, 1),
+            }),
+            msgs::Response::PreAcceptOk(msgs::PreAcceptOk {
+                op: TestOp::Set(1),
+                seq: 2,
+                instance: 0,
+                node: 1,
+                deps: Dependencies::from_raw(vec![Interference {
+                    node: 0,
+                    instance: 0
+                }]),
+            })
+        );
+
+        msg_request_response!(
+            listener,
+            tx,
+            msgs::Request::Prepare(msgs::Prepare {
+                node: 0,
+                instance: 0,
+                ballot: Ballot(0, 1, 1),
+            }),
+            msgs::Response::PrepareResp(msgs::PrepareResp::Ok(msgs::PrepareOk {
+                op: TestOp::Read,
+                state: OpState::PreAccepted,
+                seq: 1,
+                node: 0,
+                instance: 0,
+                deps: Dependencies::new(),
+                ballot: Ballot(0, 1, 1)
+            }))
+        );
+
+        // TODO
+        // Is this the correct behaviour?
+        msg_request_response!(
+            listener,
+            tx,
+            msgs::Request::PreAccept(msgs::PreAccept {
+                op: TestOp::Read,
+                seq: 1,
+                deps: Dependencies::new(),
+                node: (0, 0),
+                ballot: Ballot(0, 1, 1),
+            }),
+            msgs::Response::PreAcceptOk(msgs::PreAcceptOk {
+                op: TestOp::Read,
+                seq: 1,
+                instance: 0,
+                node: 0,
+                deps: Dependencies::new(),
             })
         );
     }

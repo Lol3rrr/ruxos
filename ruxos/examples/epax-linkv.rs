@@ -218,8 +218,8 @@ fn main() {
         _,
     )>();
 
-    runtime.spawn_blocking(move || loop {
-        listener.poll();
+    runtime.spawn(async move {
+        listener.poll().await;
     });
 
     let response_map = Arc::new(Mutex::new(HashMap::<

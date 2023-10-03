@@ -1,5 +1,4 @@
 #![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
 
 use std::{collections::HashMap, mem::ManuallyDrop};
 
@@ -92,7 +91,7 @@ fn basic() {
 
     let (mut listener, node) = epaxos::new(0, HashMap::new());
     runtime.spawn_blocking(move || loop {
-        listener.poll();
+        listener.try_poll();
     });
 
     let mut cluster = TestCluster {};
@@ -146,7 +145,7 @@ fn local_cluster() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener1.poll();
+            listener1.try_poll();
         }
     });
 
@@ -159,7 +158,7 @@ fn local_cluster() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener2.poll();
+            listener2.try_poll();
         }
     });
 
@@ -172,7 +171,7 @@ fn local_cluster() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener3.poll();
+            listener3.try_poll();
         }
     });
 
@@ -238,7 +237,7 @@ fn local_cluster_with_partition() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener1.poll();
+            listener1.try_poll();
         }
     });
 
@@ -251,7 +250,7 @@ fn local_cluster_with_partition() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener2.poll();
+            listener2.try_poll();
         }
     });
 
@@ -264,7 +263,7 @@ fn local_cluster_with_partition() {
                 .with(tracing_subscriber::fmt::layer().with_test_writer()),
         );
         loop {
-            listener3.poll();
+            listener3.try_poll();
         }
     });
 
