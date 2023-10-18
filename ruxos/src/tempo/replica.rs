@@ -209,12 +209,17 @@ impl<O, NodeId, V, T> Replica<O, NodeId, V, T>
 where
     NodeId: Clone + Ord,
 {
-    pub fn new(id: NodeId, cluster_size: usize, state: T) -> Self {
+    pub(crate) fn new(
+        id: NodeId,
+        cluster_size: usize,
+        state: T,
+        tolerated_failures: usize,
+    ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         Self {
             node: id.clone(),
-            tolerated_failures: 1,
+            tolerated_failures,
             cluster_size,
 
             detector: Detector::new(id.clone()),
@@ -1346,7 +1351,7 @@ mod tests {
 
     #[test]
     fn replica_bump() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         assert_eq!(0, replica.clock);
 
@@ -1399,7 +1404,7 @@ mod tests {
 
     #[test]
     fn receive_bump() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
         assert_eq!(0, replica.clock);
         // assert!(replica.attached.is_empty());
         // assert!(replica.detached.is_empty());
@@ -1422,7 +1427,7 @@ mod tests {
 
     #[test]
     fn replica_proposal() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
         assert_eq!(0, replica.clock);
 
         let ret_t = replica.proposal(
@@ -1466,7 +1471,7 @@ mod tests {
 
     #[test]
     fn receive_proposal() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         let msg = msgs::Propose {
             id: OpId {
@@ -1523,7 +1528,7 @@ mod tests {
 
     #[test]
     fn receive_payload() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         assert_eq!(0, replica.clock);
         // assert!(replica.attached.is_empty());
@@ -1556,7 +1561,7 @@ mod tests {
 
     #[test]
     fn recv_propose_proposeack_fastpath() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         let (ack, _bump) = replica
             .recv(
@@ -1589,7 +1594,7 @@ mod tests {
     #[test]
     #[ignore = "Not sure what the correct implementation for this would be"]
     fn receive_consensus_for_unknown_command() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         let msg = msgs::Consensus {
             id: OpId {
@@ -1610,7 +1615,7 @@ mod tests {
 
     #[test]
     fn receive_consensus() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
         replica.tolerated_failures = 0;
 
         let _ = replica
@@ -1660,7 +1665,7 @@ mod tests {
     #[test]
     #[ignore = "Testing"]
     fn receive_recover() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         let _ = replica
             .recv(
@@ -1710,7 +1715,7 @@ mod tests {
 
     #[test]
     fn receive_promises() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, ());
+        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
 
         let _responses = replica
             .recv(
@@ -1728,7 +1733,7 @@ mod tests {
         let cluster: BTreeSet<_> = [0].into_iter().collect();
         let mut broadcaster: HashMap<_, _> = [(0, VecDeque::new())].into_iter().collect();
 
-        let mut replica = Replica::<_, _, (), _>::new(0, 1, ());
+        let mut replica = Replica::<_, _, (), _>::new(0, 1, (), 1);
 
         replica
             .recv_ipc(

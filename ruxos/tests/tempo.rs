@@ -4,8 +4,12 @@ use ruxos::tempo::{self, replica::Receive};
 
 #[test]
 fn tempo_submit() {
-    let mut replicas: [_; 3] =
-        core::array::from_fn(|idx| tempo::replica::Replica::<(), _, (), _>::new(idx, 1, ()));
+    let mut replicas: [_; 3] = core::array::from_fn(|idx| {
+        tempo::Builder::new()
+            .id(idx)
+            .nodes([idx])
+            .finish::<(), (), ()>(())
+    });
 
     let fast_quorum: BTreeSet<_> = [0, 1].into_iter().collect();
 

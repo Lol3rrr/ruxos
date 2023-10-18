@@ -99,8 +99,9 @@ fn main() {
         maelstrom_api::init(&mut rx, &mut tx, |node, cluster| {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let replica =
-                tempo::replica::Replica::new(node.to_string(), cluster.len(), HashMap::new());
+            let replica = tempo::Builder::new().id(node.to_string()).nodes(cluster.to_vec()).finish(HashMap::new());
+
+            
             let handle = replica.handle();
 
             (
