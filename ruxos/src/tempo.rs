@@ -2,6 +2,7 @@
 //! * [Paper](https://hdl.handle.net/1822/81307)
 
 mod client;
+mod commands;
 mod failuredetector;
 mod ipc;
 pub mod msgs;

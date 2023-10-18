@@ -151,7 +151,7 @@ pub struct OpId<NodeId> {
     pub counter: u64,
 }
 
-struct Command<O, NodeId, V>
+pub(super) struct Command<O, NodeId, V>
 where
     NodeId: Ord,
 {
@@ -194,7 +194,9 @@ where
     promises: AllPromises<NodeId>,
     highest_continuous: HighestContinuousPromise<NodeId>,
     highest_acked: BTreeMap<NodeId, u64>,
+
     commands: HashMap<OpId<NodeId>, Command<O, NodeId, V>>,
+    commands_pending_exec: BTreeMap<u64, Vec<OpId<NodeId>>>,
 
     state: T,
     counter: Arc<AtomicU64>,
@@ -222,7 +224,9 @@ where
             promises: AllPromises::new(),
             highest_continuous: HighestContinuousPromise::new(),
             highest_acked: BTreeMap::new(),
+
             commands: HashMap::new(),
+            commands_pending_exec: BTreeMap::new(),
 
             state,
             counter: Arc::new(AtomicU64::new(0)),
@@ -653,6 +657,12 @@ where
         let h = self.highest_continuous.sorted();
         tracing::trace!("H {:?}", h);
 
+        let limit = match h.get(nodes.len() / 2).copied() {
+            Some(l) => l,
+            None => return,
+        };
+
+        /*
         let ids: Vec<_> = {
             let mut tmp: Vec<_> = self
                 .commands
@@ -665,8 +675,39 @@ where
             tmp.sort();
             tmp
         };
+        */
 
-        for (_ts, id) in ids {
+        let lower_bound = self
+            .commands_pending_exec
+            .first_entry()
+            .map(|k| *k.key())
+            .unwrap_or(limit);
+        for ts in lower_bound..=limit {
+            let elems = match self.commands_pending_exec.remove(&ts) {
+                Some(e) => e.into_iter(),
+                None => continue,
+            };
+
+            for id in elems {
+                let cmd = self.commands.get_mut(&id).expect("We got the IDs by iterating over all the commands so every ID is also contained in the commands");
+
+                // Execute command
+                let cmd_res = cmd.operation.apply(&mut self.state);
+
+                for channel in cmd.execute_channels.drain(..) {
+                    // We can ignore the result here, because this is just to notify anyone waiting for
+                    // this command to be executed and this is just best effort based.
+                    //
+                    // There is nothing we can do to recover here anyway
+                    let _ = channel.send(cmd_res.clone());
+                }
+
+                cmd.phase = CommandPhase::Execute;
+            }
+        }
+
+        /*
+        for (ts, id) in ids {
             // TODO
             // This currently only works for single partition, for multiple partitions we need to
             // send out Stable Messages to all the nodes related to this command and wait until
@@ -689,6 +730,7 @@ where
 
             cmd.phase = CommandPhase::Execute;
         }
+        */
     }
 
     pub fn liveness_check(&mut self) {
@@ -1047,6 +1089,11 @@ where
 
         cmd.timestamp = payload.timestamp;
         cmd.phase = CommandPhase::Commit;
+
+        let timestamp_ops = self.commands_pending_exec.entry(cmd.timestamp).or_default();
+        timestamp_ops.push(payload.id.clone());
+        timestamp_ops.sort_unstable();
+
         self.bump(payload.timestamp);
 
         Ok(())
