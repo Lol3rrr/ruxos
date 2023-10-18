@@ -136,8 +136,9 @@ where
 
 pub trait Receive<NodeId, M> {
     type Output;
+    type Error;
 
-    fn recv(&mut self, src: NodeId, payload: M) -> Result<Self::Output, ()>;
+    fn recv(&mut self, src: NodeId, payload: M) -> Result<Self::Output, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -273,13 +274,16 @@ impl<O, NodeId, V, T> Replica<O, NodeId, V, T>
 where
     NodeId: Clone + Ord,
 {
-    pub fn get_promises(&self) -> msgs::Promises<NodeId> {
+    pub fn get_promises(&mut self) -> msgs::Promises<NodeId> {
         msgs::Promises {
             detached: self.detached.clone(),
             attached: self.attached.filtered(&self.highest_acked),
         }
     }
 }
+
+#[derive(Debug)]
+pub enum ReceiveIPCError {}
 
 impl<O, NodeId, T> Replica<O, NodeId, O::Result, T>
 where
@@ -293,7 +297,7 @@ where
         req: ipc::IPCRequest<O, NodeId, O::Result>,
         cluster: &BTreeSet<NodeId>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), ReceiveIPCError> {
         tracing::trace!("Handling IPC");
 
         match req {
@@ -415,7 +419,7 @@ where
             msgs::MessageContent::Propose(propose) => {
                 match self
                     .recv(msg.src, propose)
-                    .map_err(|e| ReceiveMessageError::Other("Propose Message"))?
+                    .map_err(|_e| ReceiveMessageError::Other("Propose Message"))?
                 {
                     Some((ack, bump)) => {
                         broadcaster.send(
@@ -441,12 +445,12 @@ where
                 // We dont send any responses to payload messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, payload)
-                    .map_err(|e| ReceiveMessageError::Other("Payload"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Payload"))?;
             }
             msgs::MessageContent::ProposeAck(pack) => {
                 match self
                     .recv(msg.src, pack)
-                    .map_err(|e| ReceiveMessageError::Other("ProposeAck"))?
+                    .map_err(|_e| ReceiveMessageError::Other("ProposeAck"))?
                 {
                     Some(propose_resp) => match propose_resp {
                         ProposeResult::Wait => {}
@@ -476,18 +480,18 @@ where
                 // We dont send any responses to bump messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, bump)
-                    .map_err(|e| ReceiveMessageError::Other("Bump"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Bump"))?;
             }
             msgs::MessageContent::Commit(commit) => {
                 // We dont send any responses to commit messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, commit)
-                    .map_err(|e| ReceiveMessageError::Other("Commit"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Commit"))?;
             }
             msgs::MessageContent::Consensus(consensus) => {
                 let consensus_resp = self
                     .recv(msg.src, consensus)
-                    .map_err(|e| ReceiveMessageError::Other("Consensus"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Consensus"))?;
 
                 match consensus_resp {
                     ConsensusResponse::Empty => {
@@ -516,7 +520,7 @@ where
             msgs::MessageContent::ConsensusAck(cack) => {
                 match self
                     .recv(msg.src, cack)
-                    .map_err(|e| ReceiveMessageError::Other("ConsensusAck"))?
+                    .map_err(|_e| ReceiveMessageError::Other("ConsensusAck"))?
                 {
                     Some(commit) => {
                         broadcaster.send(
@@ -536,9 +540,9 @@ where
             msgs::MessageContent::Promises(promises) => {
                 tracing::debug!("Got Promises Message");
 
-                let (commit_requests, promise_ok) = self
+                let (_commit_requests, promise_ok) = self
                     .recv(msg.src, promises)
-                    .map_err(|e| ReceiveMessageError::Other("Promises"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Promises"))?;
 
                 /*
                  * TODO
@@ -568,7 +572,7 @@ where
             msgs::MessageContent::CommitRequest(creq) => {
                 let (payload, commit) = self
                     .recv(msg.src, creq)
-                    .map_err(|e| ReceiveMessageError::Other("CommitRequest"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("CommitRequest"))?;
 
                 broadcaster.send(
                     &payload.target,
@@ -596,7 +600,7 @@ where
             msgs::MessageContent::Rec(rec) => {
                 let tmp = self
                     .recv(msg.src, rec)
-                    .map_err(|e| ReceiveMessageError::Other("Rec"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("Rec"))?;
 
                 match tmp {
                     RecResponse::Ack(ack) => {
@@ -622,7 +626,7 @@ where
             msgs::MessageContent::RecAck(recack) => {
                 let consensus = self
                     .recv(msg.src, recack)
-                    .map_err(|e| ReceiveMessageError::Other("RecAck"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("RecAck"))?;
 
                 broadcaster.send_nodes(
                     &mut cluster.iter().cloned(),
@@ -636,7 +640,7 @@ where
                 // We dont send any responses to RecNack messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, recnack)
-                    .map_err(|e| ReceiveMessageError::Other("RecNAck"))?;
+                    .map_err(|_e| ReceiveMessageError::Other("RecNAck"))?;
             }
         };
 
@@ -662,27 +666,13 @@ where
             None => return,
         };
 
-        /*
-        let ids: Vec<_> = {
-            let mut tmp: Vec<_> = self
-                .commands
-                .iter()
-                .filter(|(_, cmd)| {
-                    matches!(cmd.phase, CommandPhase::Commit) && cmd.timestamp <= h[nodes.len() / 2]
-                })
-                .map(|(id, cmd)| (cmd.timestamp, id.clone()))
-                .collect();
-            tmp.sort();
-            tmp
-        };
-        */
-
         let lower_bound = self
             .commands_pending_exec
             .first_entry()
             .map(|k| *k.key())
             .unwrap_or(limit);
         for ts in lower_bound..=limit {
+            // Remove the commands from the pending execution stage
             let elems = match self.commands_pending_exec.remove(&ts) {
                 Some(e) => e.into_iter(),
                 None => continue,
@@ -705,32 +695,6 @@ where
                 cmd.phase = CommandPhase::Execute;
             }
         }
-
-        /*
-        for (ts, id) in ids {
-            // TODO
-            // This currently only works for single partition, for multiple partitions we need to
-            // send out Stable Messages to all the nodes related to this command and wait until
-            // we received such a stable message from everyone as well
-
-            tracing::trace!("Executing Command");
-
-            let cmd = self.commands.get_mut(&id).expect("We got the IDs by iterating over all the commands so every ID is also contained in the commands");
-
-            // Execute command
-            let cmd_res = cmd.operation.apply(&mut self.state);
-
-            for channel in cmd.execute_channels.drain(..) {
-                // We can ignore the result here, because this is just to notify anyone waiting for
-                // this command to be executed and this is just best effort based.
-                //
-                // There is nothing we can do to recover here anyway
-                let _ = channel.send(cmd_res.clone());
-            }
-
-            cmd.phase = CommandPhase::Execute;
-        }
-        */
     }
 
     pub fn liveness_check(&mut self) {
@@ -780,7 +744,7 @@ where
 #[derive(Debug)]
 pub enum ProcessError {
     DequeuingMessage,
-    RecvIPC,
+    RecvIPC(ReceiveIPCError),
     RecvMsg(ReceiveMessageError),
 }
 
@@ -803,7 +767,7 @@ where
         match msg {
             InternalMessage::IPC(ipc_msg) => self
                 .recv_ipc(ipc_msg, cluster, broadcaster)
-                .map_err(|e| ProcessError::RecvIPC),
+                .map_err(ProcessError::RecvIPC),
             InternalMessage::Message(message) => self
                 .recv_msg(message, cluster, broadcaster)
                 .map_err(ProcessError::RecvMsg),
@@ -816,6 +780,7 @@ where
     NodeId: Eq + Hash + Clone + PartialOrd + Ord,
 {
     type Output = ();
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Payload<O, NodeId>) -> Result<Self::Output, ()> {
         match self.commands.get_mut(&payload.id) {
@@ -857,6 +822,7 @@ where
         ResponseMsg<NodeId, msgs::ProposeAck<NodeId>>,
         AllNodeBroadcast<msgs::Bump<NodeId>>,
     )>;
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Propose<O, NodeId>) -> Result<Self::Output, ()> {
         let timestamp = match self.commands.get_mut(&payload.id) {
@@ -927,6 +893,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = ();
+    type Error = ();
 
     fn recv(&mut self, _: NodeId, payload: msgs::Bump<NodeId>) -> Result<Self::Output, ()> {
         match self.commands.get_mut(&payload.id) {
@@ -952,6 +919,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = Option<ProposeResult<NodeId>>;
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::ProposeAck<NodeId>) -> Result<Self::Output, ()> {
         let (quorum, responses) = match self.commands.get_mut(&payload.id) {
@@ -1001,6 +969,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = ConsensusResponse<NodeId>;
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Consensus<NodeId>) -> Result<Self::Output, ()> {
         let cmd = match self.commands.get_mut(&payload.id) {
@@ -1038,6 +1007,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = Option<ResponseMsg<NodeId, msgs::Commit<NodeId>>>;
+    type Error = ();
 
     fn recv(
         &mut self,
@@ -1075,6 +1045,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = ();
+    type Error = ();
 
     fn recv(&mut self, _: NodeId, payload: msgs::Commit<NodeId>) -> Result<Self::Output, ()> {
         tracing::trace!("Commited Command");
@@ -1114,6 +1085,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = RecResponse<NodeId>;
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Rec<NodeId>) -> Result<Self::Output, ()> {
         let mut cmd = match self.commands.get_mut(&payload.id) {
@@ -1169,6 +1141,7 @@ where
     NodeId: Eq + Hash + Clone + Ord,
 {
     type Output = AllNodeBroadcast<msgs::Consensus<NodeId>>;
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::RecAck<NodeId>) -> Result<Self::Output, ()> {
         let cmd = match self.commands.get_mut(&payload.id) {
@@ -1241,6 +1214,7 @@ where
     NodeId: Eq + Hash + Ord,
 {
     type Output = ();
+    type Error = ();
 
     fn recv(&mut self, _: NodeId, payload: msgs::RecNAck<NodeId>) -> Result<Self::Output, ()> {
         let cmd = match self.commands.get_mut(&payload.id) {
@@ -1269,6 +1243,7 @@ where
         AllNodeBroadcast<Vec<msgs::CommitRequest<NodeId>>>,
         ResponseMsg<NodeId, msgs::PromisesOk>,
     );
+    type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Promises<NodeId>) -> Result<Self::Output, ()> {
         let c =
@@ -1329,6 +1304,7 @@ where
         ResponseMsg<NodeId, msgs::Payload<O, NodeId>>,
         ResponseMsg<NodeId, msgs::Commit<NodeId>>,
     );
+    type Error = ();
 
     fn recv(
         &mut self,

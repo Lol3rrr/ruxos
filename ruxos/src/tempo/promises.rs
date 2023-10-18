@@ -249,16 +249,23 @@ where
 {
     node: NodeId,
     promises: BTreeSet<(u64, OpId<NodeId>)>,
+    #[cfg_attr(feature = "serde", serde(skip, default = "empty_option"))]
+    last_lowest_elem: Option<(u64, OpId<NodeId>)>,
+}
+
+fn empty_option<T>() -> Option<T> {
+    None
 }
 
 impl<NodeId> AttachedPromises<NodeId>
 where
-    NodeId: Ord,
+    NodeId: Ord + Clone,
 {
     pub fn new(id: NodeId) -> Self {
         Self {
             node: id,
             promises: BTreeSet::new(),
+            last_lowest_elem: None,
         }
     }
 
@@ -276,22 +283,34 @@ where
             .map(|(timestamp, opid)| (*timestamp, opid))
     }
 
-    pub fn filtered(&self, hc: &BTreeMap<NodeId, u64>) -> Self
+    pub fn filtered(&mut self, hc: &BTreeMap<NodeId, u64>) -> Self
     where
         NodeId: Clone,
     {
+        // Altough this is O(n), n in this case is only the number of Nodes in the system, which is
+        // pretty small and should not change often so this acts more as a constant factor
         let smallest = hc.values().min().copied().unwrap_or(0);
 
-        let n_promises = self
-            .promises
-            .iter()
-            .filter(|(key, _)| *key > smallest)
-            .cloned()
-            .collect();
+        let n_promises: BTreeSet<_> = if let Some(prev_first) = self.last_lowest_elem.as_ref() {
+            self.promises
+                .range(prev_first..)
+                .skip_while(|(key, _)| *key <= smallest)
+                .cloned()
+                .collect()
+        } else {
+            self.promises
+                .iter()
+                .skip_while(|(key, _)| *key <= smallest)
+                .cloned()
+                .collect()
+        };
+
+        self.last_lowest_elem = n_promises.first().cloned();
 
         Self {
             node: self.node.clone(),
             promises: n_promises,
+            last_lowest_elem: None,
         }
     }
 }
