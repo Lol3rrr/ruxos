@@ -18,6 +18,7 @@ itertools = "0.11"
 
 [dev-dependencies]
 maelstrom_api = { path = "../maelstrom_api" }
+aufruhr2 = { path = "../../aufruhr2" }
 
 rand = { version = "0.8.5", features = ["small_rng"] }
 serde = "1.0.183"

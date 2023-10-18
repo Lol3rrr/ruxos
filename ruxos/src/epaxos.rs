@@ -15,6 +15,15 @@
 //! The [`ListenerHandle`] is the interface through which messages send from other nodes in the
 //! system are forwarded to the local [`NodeListener`].
 //!
+//! # Consistency
+//! ## Execution Linearizability
+//! If you have two operations `A` and `B` and `A` is committed before `B` is proposed, then `A`
+//! will always be executed before `B`. However if `A` and `B` have some overlap, so `B` is
+//! proposed before `A` is completly committed, then `B` may get ordered before `A`.
+//! This means that from the perspective of a single client, if that client only starts new
+//! Operations after previous ones have been committed, then all the operations it performs are
+//! ordered the same in the Replicated State-Machine as they would be locally.
+//!
 //! # References:
 //! * [EPaxos Paper](https://dl.acm.org/doi/pdf/10.1145/2517349.2517350)
 //! * [EPaxos Go Impl](https://github.com/efficient/epaxos/blob/master/src/epaxos/epaxos.go)
@@ -24,8 +33,6 @@
 // * when commiting an operation, get handle to notify of execution of operation
 
 // TODO
-// * Ballot numbers
-// * Explicit Prepare
 // * Dynamic Cluster membership
 // * Snapshots of the state machine for more efficient joins
 

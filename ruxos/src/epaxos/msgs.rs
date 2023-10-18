@@ -1,7 +1,7 @@
 //! The Messages exchanged between differnet Nodes in the EPaxos-Cluster
 
 use super::{
-    dependencies::{Dependencies, Interference},
+    dependencies::Dependencies,
     listener::{Ballot, OpState},
 };
 

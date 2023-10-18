@@ -224,7 +224,7 @@ where
             .await
         {
             Ok(r) => r,
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(feature = "tracing")]
                 tracing::error!("Sending Prepare Message");
 
@@ -333,7 +333,7 @@ where
                     },
                     |resp| match resp {
                         ipc::Response::ExplicitCommitted(c) => c,
-                        other => todo!(),
+                        _other => todo!(),
                     },
                 )
                 .await
@@ -342,7 +342,7 @@ where
             let op = commit_msg.op.clone();
 
             let target = cluster.size() - 1;
-            if let Err(e) = cluster
+            if let Err(_e) = cluster
                 .send(msgs::Request::Commit(commit_msg), target, &self.id)
                 .await
             {
@@ -379,7 +379,7 @@ where
 
             self.commit(op_instance.node, cmd.instance, n_ballot, cluster)
                 .await
-                .map_err(|e| ())?
+                .map_err(|_e| ())?
         } else {
             tracing::debug!("Prepare Responses {:#?}", r);
             tracing::debug!(
@@ -433,7 +433,7 @@ where
 
                 self.commit(op_instance.node, cmd.instance, n_ballot, cluster)
                     .await
-                    .map_err(|e| ())?
+                    .map_err(|_e| ())?
             } else if let Some(cmd) = r
                 .iter()
                 .find(|cmd| matches!(cmd.state, OpState::PreAccepted))
@@ -456,7 +456,7 @@ where
                         n_ballot.clone(),
                     )
                     .await
-                    .map_err(|e| ())?;
+                    .map_err(|_e| ())?;
 
                 // Send PreAccept to other nodes
                 let mut response_handle = cluster
@@ -466,7 +466,7 @@ where
                         &self.id,
                     )
                     .await
-                    .map_err(|e| ())?;
+                    .map_err(|_e| ())?;
 
                 // 10.
                 // Wait for floor(N/2) PreAcceptOk responses
@@ -482,8 +482,8 @@ where
                             Ok(msgs::Response::PreAcceptOk(v)) => {
                                 tmp.push(v);
                             }
-                            Ok(other) => return Err(()),
-                            Err(e) => return Err(()),
+                            Ok(_other) => return Err(()),
+                            Err(_e) => return Err(()),
                         }
                     }
                     drop(response_handle);
@@ -525,7 +525,7 @@ where
                 // 20.
                 self.commit::<C>(op_instance.node, op_instance.instance, n_ballot, cluster)
                     .await
-                    .map_err(|e| ())?
+                    .map_err(|_e| ())?
             } else {
                 #[cfg(feature = "tracing")]
                 tracing::info!("Running Phase 1 for NoOp");
@@ -543,7 +543,7 @@ where
                     .await
                 {
                     Ok(r) => r,
-                    Err(e) => {
+                    Err(_e) => {
                         return Err(());
                     }
                 };
@@ -572,7 +572,7 @@ where
                         // 20.
                         self.commit::<C>(op_instance.node, op_instance.instance, n_ballot, cluster)
                             .await
-                            .map_err(|e| ())?
+                            .map_err(|_e| ())?
                     }
                 }
             }
@@ -600,7 +600,7 @@ where
             .ipc
             .accept(node, instance, op, n_deps, n_seq, ballot)
             .await
-            .map_err(|e| "Local Node Accept")?;
+            .map_err(|_e| "Local Node Accept")?;
 
         let node_threshold = cluster.size() / 2;
 
@@ -611,14 +611,14 @@ where
             .await
         {
             Ok(r) => r,
-            Err(e) => return Err("Sending Accept to Cluster"),
+            Err(_e) => return Err("Sending Accept to Cluster"),
         };
 
         let mut count: usize = 0;
         while count < node_threshold {
             let msg = match rx.recv().await {
                 Ok(m) => m,
-                Err(e) => return Err("Receiving Accept Response"),
+                Err(_e) => return Err("Receiving Accept Response"),
             };
 
             match msg {
@@ -626,7 +626,7 @@ where
                     count += 1;
                 }
                 msgs::Response::Nack => return Err("Received a Nack"),
-                other => todo!(),
+                _other => todo!(),
             };
         }
 
@@ -648,7 +648,7 @@ where
             .ipc
             .commit(node.clone(), instance, ballot)
             .await
-            .map_err(|e| ())?;
+            .map_err(|_e| ())?;
 
         let op = msg.op.clone();
 
@@ -658,8 +658,8 @@ where
             .send(msgs::Request::Commit(msg), cluster.size() - 1, &self.id)
             .await
         {
-            Ok(c) => {}
-            Err(e) => return Err(()),
+            Ok(_c) => {}
+            Err(_e) => return Err(()),
         };
 
         Ok(CommitHandle::committed(
@@ -688,7 +688,7 @@ where
             .ipc
             .preaccept(op, node.clone(), instance, ballot.clone())
             .await
-            .map_err(|e| Phase1Error::Other("Could not handle Preaccept"))?;
+            .map_err(|_e| Phase1Error::Other("Could not handle Preaccept"))?;
 
         // Send PreAccept to other nodes
         let mut response_handle = cluster
@@ -698,7 +698,7 @@ where
                 &self.id,
             )
             .await
-            .map_err(|e| Phase1Error::SendingPreaccept)?;
+            .map_err(|_e| Phase1Error::SendingPreaccept)?;
 
         // 10.
         // Wait for floor(N/2) PreAcceptOk responses
@@ -713,8 +713,8 @@ where
                     Ok(msgs::Response::PreAcceptOk(v)) => {
                         tmp.push(v);
                     }
-                    Ok(other) => return Err(Phase1Error::ReceivedUnexpectedResponse),
-                    Err(e) => break,
+                    Ok(_other) => return Err(Phase1Error::ReceivedUnexpectedResponse),
+                    Err(_e) => break,
                 }
             }
             drop(response_handle);
@@ -732,7 +732,7 @@ where
         // if true => goto 11
         // else => goto 13
         let can_fast_path = {
-            let first_state = self_preaccept;
+            let first_state = &self_preaccept;
 
             responses
                 .iter()
@@ -741,8 +741,7 @@ where
         };
 
         if can_fast_path {
-            let mut responses = responses;
-            let first = responses.pop().unwrap();
+            let first = self_preaccept;
 
             Ok(Phase1Outcome::FastPath {
                 seq: first.seq,
@@ -790,10 +789,10 @@ where
         };
 
         for (node_id, instances) in storage {
-            writeln!(writer, "{:?}:", node_id);
+            let _ = writeln!(writer, "{:?}:", node_id);
 
-            for (instance, op) in instances {
-                writeln!(writer, "  {}", instance);
+            for (instance, _op) in instances {
+                let _ = writeln!(writer, "  {}", instance);
             }
         }
     }
@@ -915,7 +914,8 @@ mod tests {
                     instance: 0,
                 },
             )
-            .await;
+            .await
+            .unwrap();
         });
 
         local
@@ -999,7 +999,8 @@ mod tests {
                     instance: 0,
                 },
             )
-            .await;
+            .await
+            .unwrap();
         });
 
         local
@@ -1111,7 +1112,8 @@ mod tests {
                     instance: 0,
                 },
             )
-            .await;
+            .await
+            .unwrap();
         });
 
         local

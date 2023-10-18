@@ -1,5 +1,4 @@
 #![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
 
 use std::{
     collections::{HashMap, HashSet},

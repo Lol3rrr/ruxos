@@ -14,5 +14,11 @@ pub mod caspaxos;
 
 pub mod epaxos;
 
+pub mod alvin;
+
+pub mod tempo;
+
+pub mod fdetect;
+
 #[cfg(test)]
 pub mod tests;

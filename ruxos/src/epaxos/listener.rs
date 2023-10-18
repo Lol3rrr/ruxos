@@ -87,13 +87,26 @@ pub enum FeedError {
     ReceiveError(tokio::sync::oneshot::error::RecvError),
 }
 
-/// TODO
+/// The Handle to forward messages from other Nodes in the cluster to the listener of the current
+/// Node
 pub struct ListenerHandle<Id, O, T>
 where
     O: Operation<T>,
 {
     tx: tokio::sync::mpsc::UnboundedSender<NodeMessage<Id, O, T>>,
     _marker: PhantomData<T>,
+}
+
+impl<Id, O, T> Clone for ListenerHandle<Id, O, T>
+where
+    O: Operation<T>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<Id, O, T> ListenerHandle<Id, O, T>
@@ -201,7 +214,7 @@ where
 
                 let resp = match self.handle_ipc(req.req) {
                     Ok(r) => r,
-                    Err(e) => {
+                    Err(_e) => {
                         tracing::error!("Handling IPC");
                         return;
                     }
@@ -215,13 +228,13 @@ where
             NodeMessage::External { req, tx } => {
                 let resp = match self.handle_msg(req) {
                     Ok(r) => r,
-                    Err(e) => {
+                    Err(_e) => {
                         tracing::error!("Handling Message");
                         return;
                     }
                 };
 
-                if let Err(e) = tx.send(resp) {
+                if let Err(_e) = tx.send(resp) {
                     tracing::error!("Sending Response");
                 }
             }

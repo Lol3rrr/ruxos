@@ -160,9 +160,9 @@ where
     where
         M: FnOnce(Response<Id, O, T>) -> T2,
     {
-        let rx = self.send(op).map_err(|e| ())?;
+        let rx = self.send(op).map_err(|_e| ())?;
 
-        let raw = rx.await.map_err(|e| ())?;
+        let raw = rx.await.map_err(|_e| ())?;
 
         Ok(mapping(raw))
     }
@@ -181,9 +181,9 @@ where
                 instance,
                 ballot,
             })
-            .map_err(|e| ())?;
+            .map_err(|_e| ())?;
 
-        let resp = rx.await.map_err(|e| ())?;
+        let resp = rx.await.map_err(|_e| ())?;
 
         match resp {
             Response::PreAcceptOk(msg, confirm) => Ok((msg, confirm)),
@@ -209,9 +209,9 @@ where
                 n_seq,
                 ballot,
             })
-            .map_err(|e| ())?;
+            .map_err(|_e| ())?;
 
-        let resp = rx.await.map_err(|e| ())?;
+        let resp = rx.await.map_err(|_e| ())?;
 
         match resp {
             Response::Accepted(msg) => Ok(msg),
@@ -231,9 +231,9 @@ where
                 instance,
                 ballot,
             })
-            .map_err(|e| ())?;
+            .map_err(|_e| ())?;
 
-        let resp = rx.await.map_err(|e| ())?;
+        let resp = rx.await.map_err(|_e| ())?;
 
         match resp {
             Response::Committed(c) => Ok(c),
