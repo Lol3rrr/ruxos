@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::replica::{OpId, Promise};
+use super::replica::OpId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -145,27 +145,6 @@ impl<NodeId> DetachedPromises<NodeId> {
     }
 }
 
-impl<NodeId> DetachedPromises<NodeId>
-where
-    NodeId: Clone,
-{
-    pub fn promises(&self) -> impl Iterator<Item = Promise<NodeId>> + '_ {
-        self.values.iter().flat_map(|pvalue| match pvalue {
-            PromiseValue::Single { timestamp } => Box::new(core::iter::once(Promise {
-                node: self.node.clone(),
-                timestamp: *timestamp,
-            }))
-                as Box<dyn Iterator<Item = Promise<_>>>,
-            PromiseValue::Ranged { start, end } => {
-                Box::new((*start..=*end).into_iter().map(|ts| Promise {
-                    node: self.node.clone(),
-                    timestamp: ts,
-                }))
-            }
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AllPromises<NodeId>
@@ -221,14 +200,13 @@ where
             .nodes
             .iter()
             .map(|(key, node_proms)| {
-                let prev = previous.get(key);
+                let prev = core::cmp::max(previous.get(key), 1);
 
                 (
                     key.clone(),
                     node_proms
-                        .iter()
-                        .zip(1..)
-                        .skip(prev as usize)
+                        .range(prev..)
+                        .zip(prev..)
                         .take_while(|(test_val, c)| *test_val == c)
                         .last()
                         .map(|(c, _)| *c)
