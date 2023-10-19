@@ -5,6 +5,8 @@ use std::{
 
 use super::replica::OpId;
 
+mod rangelist;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PromiseValue {
@@ -119,6 +121,10 @@ impl<NodeId> DetachedPromises<NodeId> {
         self.values.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
     /// Adds all the timestamps t `clock + 1 <= t <= timestamp`
     pub fn add(&mut self, range: RangeInclusive<u64>) {
         if range.is_empty() {
@@ -150,6 +156,28 @@ impl<NodeId> DetachedPromises<NodeId> {
         };
     }
 
+    pub fn filtered(&self, hc: &BTreeMap<NodeId, u64>) -> Self
+    where
+        NodeId: Clone,
+    {
+        let smallest = hc.values().min().copied().unwrap_or(0);
+
+        let values: Vec<_> = self
+            .values
+            .iter()
+            .filter(|entry| match entry {
+                PromiseValue::Single { timestamp } => *timestamp > smallest,
+                PromiseValue::Ranged { end, .. } => *end > smallest,
+            })
+            .cloned()
+            .collect();
+
+        Self {
+            node: self.node.clone(),
+            values,
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &PromiseValue> + '_ {
         self.values.iter()
     }
@@ -161,7 +189,7 @@ pub struct AllPromises<NodeId>
 where
     NodeId: Ord,
 {
-    nodes: BTreeMap<NodeId, BTreeSet<u64>>,
+    nodes: BTreeMap<NodeId, rangelist::RangeList>,
 }
 
 impl<NodeId> AllPromises<NodeId>
@@ -175,17 +203,18 @@ where
     }
 
     pub fn union_detached(&mut self, detached: DetachedPromises<NodeId>) {
-        let promises = self.nodes.entry(detached.node).or_default();
+        let promises = self
+            .nodes
+            .entry(detached.node)
+            .or_insert_with(|| rangelist::RangeList::new());
 
         for promise in detached.values {
-            match promise {
-                PromiseValue::Single { timestamp } => {
-                    promises.insert(timestamp);
-                }
-                PromiseValue::Ranged { start, end } => {
-                    promises.extend(start..=end);
-                }
+            let range = match promise {
+                PromiseValue::Single { timestamp } => timestamp..=timestamp,
+                PromiseValue::Ranged { start, end } => start..=end,
             };
+
+            promises.insert(range);
         }
     }
 
@@ -194,15 +223,15 @@ where
         I: IntoIterator<Item = (NodeId, u64)>,
     {
         for (node, timestamp) in iter {
-            let promises = self.nodes.entry(node).or_default();
-            promises.insert(timestamp);
+            let promises = self
+                .nodes
+                .entry(node)
+                .or_insert_with(|| rangelist::RangeList::new());
+            promises.insert(timestamp..=timestamp);
         }
     }
 
-    pub fn highest_contiguous(
-        &self,
-        previous: &HighestContinuousPromise<NodeId>,
-    ) -> HighestContinuousPromise<NodeId>
+    pub fn highest_contiguous(&self) -> HighestContinuousPromise<NodeId>
     where
         NodeId: Clone,
     {
@@ -210,14 +239,7 @@ where
             .nodes
             .iter()
             .filter_map(|(key, node_proms)| {
-                let prev = core::cmp::max(previous.get(key), 1);
-
-                let value = node_proms
-                    .range(prev..)
-                    .zip(prev..)
-                    .take_while(|(test_val, c)| *test_val == c)
-                    .last()
-                    .map(|(c, _)| *c)?;
+                let value = node_proms.first().map(|r| *r.end())?;
 
                 Some((key.clone(), value))
             })
@@ -284,20 +306,18 @@ where
         let n_promises: BTreeSet<_> = if let Some(prev_first) = self.last_lowest_elem.as_ref() {
             self.promises
                 .range(prev_first..)
-                .skip_while(|(key, _)| *key <= smallest)
+                .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
         } else {
             self.promises
                 .iter()
-                .skip_while(|(key, _)| *key <= smallest)
+                .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
         };
 
-        if let Some(n) = n_promises.first().cloned() {
-            self.last_lowest_elem = Some((n.0.saturating_sub(1), n.1));
-        }
+        self.last_lowest_elem = n_promises.first().cloned();
 
         Self {
             node: self.node.clone(),
@@ -330,6 +350,10 @@ where
 
     pub fn get(&self, node: &NodeId) -> u64 {
         self.nodes.get(node).copied().unwrap_or(0)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &u64> + '_ {
+        self.nodes.values()
     }
 }
 
@@ -408,7 +432,7 @@ mod tests {
 
         all_proms.extend([(0i32, 1), (0i32, 2), (0i32, 3), (0i32, 5)]);
 
-        let hc = all_proms.highest_contiguous(&HighestContinuousPromise::new([0]));
+        let hc = all_proms.highest_contiguous();
         assert_eq!(vec![3], hc.sorted());
     }
 }

@@ -286,14 +286,17 @@ where
             self.attached.clone()
         };
 
-        if self.detached.is_empty() && attached.len() == 0 {
+        let detached = if self.highest_acked.len() == self.cluster.len() {
+            self.detached.filtered(&self.highest_acked)
+        } else {
+            self.detached.clone()
+        };
+
+        if detached.is_empty() && attached.len() == 0 {
             return None;
         }
 
-        Some(msgs::Promises {
-            detached: self.detached.clone(),
-            attached,
-        })
+        Some(msgs::Promises { detached, attached })
     }
 }
 
@@ -399,15 +402,6 @@ where
                     Some(m) => m,
                     None => return Ok(()),
                 };
-
-                /*
-                tracing::warn!(
-                    "Sending {} Attached-Promises - First: {:?} - Smallest Ack {:?}",
-                    msg.attached.len(),
-                    msg.attached.iter().next().map(|(ts, _)| ts),
-                    self.highest_acked.values().collect::<Vec<_>>(),
-                );
-                */
 
                 broadcaster.send_nodes(
                     &mut self.cluster.iter().cloned(),
@@ -1294,17 +1288,7 @@ where
         self.promises.extend(c);
 
         // Update the highest continuous elements
-        self.highest_continuous = self.promises.highest_contiguous(&self.highest_continuous);
-
-        /*
-        if prev != self.highest_continuous {
-            tracing::warn!(
-                "New Highest Continuos: {:?} - Highest Acked {:?}",
-                self.highest_continuous.sorted(),
-                self.highest_acked.values().collect::<Vec<_>>()
-            );
-        }
-        */
+        self.highest_continuous = self.promises.highest_contiguous();
 
         let requests: Vec<_> = payload
             .attached

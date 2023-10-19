@@ -1,2 +1,6 @@
 [workspace]
 members = ["ruxos", "maelstrom_api"]
+
+[profile.profiling]
+inherits = "release"
+debug = true
