@@ -11,6 +11,8 @@ use crate::tempo::{ipc, replica::OpId};
 
 use super::{msgs, replica::InternalMessage, Operation};
 
+/// A Handle to a `tempo` replica instance, this is the main for interacting with a replica for
+/// issuing operations to the system
 #[derive(Clone)]
 pub struct Handle<O, NodeId, T, V>
 where
@@ -37,6 +39,7 @@ where
         &self.node
     }
 
+    /// Starts an execution attempt
     pub fn try_execute(&self) {
         let _ = self
             .tx
@@ -45,16 +48,20 @@ where
             )));
     }
 
+    /// Initiate sending the Promises to the other nodes in the system:
     pub fn promises(&self) {
         let _ = self
             .tx
             .send(InternalMessage::IPC(ipc::IPCRequest::Promises));
     }
 
+    /// Forwards a message received from a different Replica in the system to the replica
+    /// associated with this handle
     pub fn message(&self, msg: msgs::Message<O, NodeId>) -> Result<(), ()> {
-        self.tx.send(InternalMessage::Message(msg)).map_err(|e| ())
+        self.tx.send(InternalMessage::Message(msg)).map_err(|_e| ())
     }
 
+    /// Submits the Operation to the cluster
     pub async fn submit(&self, op: O, nodes: BTreeSet<NodeId>) -> Result<O::Result, SubmitError> {
         let op_id = OpId {
             node: self.node.clone(),
@@ -77,8 +84,8 @@ where
         // Send Messages to cluster
         self.tx
             .send(InternalMessage::IPC(ipc::IPCRequest::Submit(submit)))
-            .map_err(|e| SubmitError::SendingMessageToCluster)?;
+            .map_err(|_e| SubmitError::SendingMessageToCluster)?;
 
-        wait_rx.await.map_err(|e| SubmitError::ReceivingResult)
+        wait_rx.await.map_err(|_e| SubmitError::ReceivingResult)
     }
 }

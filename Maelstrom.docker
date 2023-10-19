@@ -1,0 +1,20 @@
+FROM ubuntu:22.04
+
+RUN apt-get update;
+RUN apt-get upgrade -y;
+RUN apt-get install curl git build-essential gnuplot gnuplot-x11 gnuplot-doc -y;
+
+# Install OpenJDK and Leinigen
+RUN apt-get install openjdk-18-jdk -y;
+RUN curl -o /usr/local/bin/lein https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein;
+RUN chmod a+x /usr/local/bin/lein;
+# lein
+
+# Install Rustup
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y;
+ENV PATH=$PATH:~/.cargo/bin;
+RUN ~/.cargo/bin/rustup toolchain install nightly;
+RUN ~/.cargo/bin/rustup default nightly;
+
+# Clone Maelstrom for testing
+RUN git clone https://github.com/jepsen-io/maelstrom.git;

@@ -1,2 +1,5 @@
 target/
 .git/
+aufruhr/target/
+maelstrom_api/target/
+store/
