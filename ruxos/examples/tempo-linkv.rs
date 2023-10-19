@@ -132,7 +132,7 @@ fn main() {
     runtime.spawn(async move {
         loop {
             handle.promises();
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
 
