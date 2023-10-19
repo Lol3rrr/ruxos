@@ -283,8 +283,7 @@ where
 
         let n_promises: BTreeSet<_> = if let Some(prev_first) = self.last_lowest_elem.as_ref() {
             self.promises
-                // .range(prev_first..)
-                .iter()
+                .range(prev_first..)
                 .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
@@ -298,7 +297,7 @@ where
 
         if let Some(n) = n_promises
             .first()
-            .filter(|elem| Some(*elem) == self.last_lowest_elem.as_ref())
+            .filter(|elem| elem.0 > smallest + 1)
             .cloned()
         {
             self.last_lowest_elem = Some((n.0.saturating_sub(1), n.1));
