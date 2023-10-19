@@ -112,6 +112,10 @@ impl<NodeId> DetachedPromises<NodeId> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     /// Adds all the timestamps t `clock + 1 <= t <= timestamp - 1`
     pub fn add(&mut self, clock: u64, timestamp: u64) {
         let items = (timestamp - 1).saturating_sub(clock);
@@ -142,6 +146,10 @@ impl<NodeId> DetachedPromises<NodeId> {
                 self.values.push(n_promise);
             }
         };
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PromiseValue> + '_ {
+        self.values.iter()
     }
 }
 
@@ -247,6 +255,10 @@ where
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.promises.len()
+    }
+
     pub fn attach(&mut self, op: OpId<NodeId>, timestamp: u64) {
         self.promises.insert((timestamp, op));
     }
@@ -272,18 +284,24 @@ where
         let n_promises: BTreeSet<_> = if let Some(prev_first) = self.last_lowest_elem.as_ref() {
             self.promises
                 .range(prev_first..)
-                .skip_while(|(key, _)| *key <= smallest)
+                .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
         } else {
             self.promises
                 .iter()
-                .skip_while(|(key, _)| *key <= smallest)
+                .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
         };
 
-        self.last_lowest_elem = n_promises.first().cloned();
+        if let Some(n) = n_promises
+            .first()
+            .filter(|elem| Some(*elem) == self.last_lowest_elem.as_ref())
+            .cloned()
+        {
+            self.last_lowest_elem = Some((n.0.saturating_sub(1), n.1));
+        }
 
         Self {
             node: self.node.clone(),
@@ -293,6 +311,7 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct HighestContinuousPromise<NodeId> {
     nodes: BTreeMap<NodeId, u64>,
 }
@@ -301,9 +320,9 @@ impl<NodeId> HighestContinuousPromise<NodeId>
 where
     NodeId: Ord,
 {
-    pub fn new() -> Self {
+    pub fn new(ids: impl IntoIterator<Item = NodeId>) -> Self {
         Self {
-            nodes: BTreeMap::new(),
+            nodes: ids.into_iter().map(|id| (id, 0)).collect(),
         }
     }
 
@@ -393,7 +412,7 @@ mod tests {
 
         all_proms.extend([(0i32, 1), (0i32, 2), (0i32, 3), (0i32, 5)]);
 
-        let hc = all_proms.highest_contiguous(&HighestContinuousPromise::new());
+        let hc = all_proms.highest_contiguous(&HighestContinuousPromise::new([0]));
         assert_eq!(vec![3], hc.sorted());
     }
 }

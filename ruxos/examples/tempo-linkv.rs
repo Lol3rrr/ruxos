@@ -91,7 +91,7 @@ fn main() {
             .with_ansi(false)
             .with_max_level(tracing::Level::WARN)
             .finish(),
-    );
+    ).unwrap();
 
     let (mut tx, mut rx) = maelstrom_api::io_recv_send();
 
@@ -133,7 +133,7 @@ fn main() {
     runtime.spawn(async move {
         loop {
             handle.promises();
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     });
 
@@ -182,14 +182,16 @@ fn main() {
         >() {
             match tmp.body().content() {
                 maelstrom_api::workflow::linear_kv::Request::Custom { content } => {
-                    handle.message(content.clone());
+                    if let Err(e) = handle.message(content.clone()) {
+                        tracing::error!("Handling Message");
+                    }
                 }
                 other => {
                     let op = match other {
                         maelstrom_api::workflow::linear_kv::Request::Read { key } => KVOp::Read { key: *key },
                         maelstrom_api::workflow::linear_kv::Request::Write { key, value } => KVOp::Write { key: *key, value: *value},
                         maelstrom_api::workflow::linear_kv::Request::Cas { key, from, to } => KVOp::Cas { key: *key, from: *from, to: *to },
-                        maelstrom_api::workflow::linear_kv::Request::Custom { content } => unreachable!(),
+                        maelstrom_api::workflow::linear_kv::Request::Custom { .. } => unreachable!(),
                     };
 
                     let nhandle = handle.clone();
@@ -217,6 +219,8 @@ fn main() {
                 }
             };
         }
+
+        tracing::error!("Stopped rx.recv");
     });
 
     runtime.block_on(async move {
@@ -224,7 +228,7 @@ fn main() {
         let mut broadcaster = broadcaster;
 
         loop {
-            match replica.process(&nodes, &mut broadcaster).await {
+            match replica.process( &mut broadcaster).await {
                 Ok(r) => {}
                 Err(e) => {
                     tracing::error!("Error Processing: {:?}", e);

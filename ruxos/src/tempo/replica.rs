@@ -185,7 +185,7 @@ where
 {
     node: NodeId,
     tolerated_failures: usize,
-    cluster_size: usize,
+    cluster: Vec<NodeId>,
 
     detector: Detector<NodeId>,
 
@@ -211,7 +211,7 @@ where
 {
     pub(crate) fn new(
         id: NodeId,
-        cluster_size: usize,
+        cluster: Vec<NodeId>,
         state: T,
         tolerated_failures: usize,
     ) -> Self {
@@ -220,7 +220,7 @@ where
         Self {
             node: id.clone(),
             tolerated_failures,
-            cluster_size,
+            cluster: cluster.clone(),
 
             detector: Detector::new(id.clone()),
 
@@ -228,7 +228,7 @@ where
             detached: DetachedPromises::new(id.clone()),
             attached: AttachedPromises::new(id),
             promises: AllPromises::new(),
-            highest_continuous: HighestContinuousPromise::new(),
+            highest_continuous: HighestContinuousPromise::new(cluster),
             highest_acked: BTreeMap::new(),
 
             commands: HashMap::new(),
@@ -279,11 +279,21 @@ impl<O, NodeId, V, T> Replica<O, NodeId, V, T>
 where
     NodeId: Clone + Ord,
 {
-    pub fn get_promises(&mut self) -> msgs::Promises<NodeId> {
-        msgs::Promises {
-            detached: self.detached.clone(),
-            attached: self.attached.filtered(&self.highest_acked),
+    pub fn get_promises(&mut self) -> Option<msgs::Promises<NodeId>> {
+        let attached = if self.highest_acked.len() == self.cluster.len() {
+            self.attached.filtered(&self.highest_acked)
+        } else {
+            self.attached.clone()
+        };
+
+        if self.detached.is_empty() && attached.len() == 0 {
+            return None;
         }
+
+        Some(msgs::Promises {
+            detached: self.detached.clone(),
+            attached,
+        })
     }
 }
 
@@ -296,11 +306,10 @@ where
     O: Operation<T> + Clone,
     O::Result: Clone,
 {
-    #[tracing::instrument(skip(self, req, cluster, broadcaster))]
+    #[tracing::instrument(skip(self, req, broadcaster))]
     pub fn recv_ipc(
         &mut self,
         req: ipc::IPCRequest<O, NodeId, O::Result>,
-        cluster: &BTreeSet<NodeId>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
     ) -> Result<(), ReceiveIPCError> {
         tracing::trace!("Handling IPC");
@@ -345,7 +354,8 @@ where
                 };
 
                 broadcaster.send_nodes(
-                    &mut cluster
+                    &mut self
+                        .cluster
                         .iter()
                         .filter(|cn| propose.quorum.contains(cn))
                         .cloned(),
@@ -356,7 +366,8 @@ where
                 );
 
                 broadcaster.send_nodes(
-                    &mut cluster
+                    &mut self
+                        .cluster
                         .iter()
                         .filter(|cn| !payload.quorum.contains(cn))
                         .cloned(),
@@ -369,7 +380,7 @@ where
                 Ok(())
             }
             ipc::IPCRequest::TryExecute(_execute) => {
-                let mut nodes: Vec<_> = cluster.into_iter().cloned().collect();
+                let mut nodes: Vec<_> = self.cluster.iter().cloned().collect();
                 nodes.sort();
 
                 self.try_execute(&nodes);
@@ -384,10 +395,22 @@ where
                 todo!()
             }
             ipc::IPCRequest::Promises => {
-                let msg = self.get_promises();
+                let msg = match self.get_promises() {
+                    Some(m) => m,
+                    None => return Ok(()),
+                };
+
+                /*
+                tracing::warn!(
+                    "Sending {} Attached-Promises - First: {:?} - Smallest Ack {:?}",
+                    msg.attached.len(),
+                    msg.attached.iter().next().map(|(ts, _)| ts),
+                    self.highest_acked.values().collect::<Vec<_>>(),
+                );
+                */
 
                 broadcaster.send_nodes(
-                    &mut cluster.iter().cloned(),
+                    &mut self.cluster.iter().cloned(),
                     msgs::Message {
                         src: self.node.clone(),
                         msg: msgs::MessageContent::Promises(msg),
@@ -411,11 +434,10 @@ where
     O: Clone,
     V: Clone,
 {
-    #[tracing::instrument(skip(self, msg, cluster, broadcaster))]
+    #[tracing::instrument(skip(self, msg, broadcaster))]
     pub fn recv_msg(
         &mut self,
         msg: msgs::Message<O, NodeId>,
-        cluster: &BTreeSet<NodeId>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
     ) -> Result<(), ReceiveMessageError> {
         tracing::trace!("Handling Message");
@@ -436,7 +458,7 @@ where
                         );
 
                         broadcaster.send_nodes(
-                            &mut cluster.iter().cloned(),
+                            &mut self.cluster.iter().cloned(),
                             msgs::Message {
                                 src: self.node.clone(),
                                 msg: bump.msg.into(),
@@ -461,7 +483,7 @@ where
                         ProposeResult::Wait => {}
                         ProposeResult::Commit(commit) => {
                             broadcaster.send_nodes(
-                                &mut cluster.iter().cloned(),
+                                &mut self.cluster.iter().cloned(),
                                 msgs::Message {
                                     src: self.node.clone(),
                                     msg: msgs::MessageContent::Commit(commit.msg),
@@ -470,7 +492,7 @@ where
                         }
                         ProposeResult::Consensus(consensus) => {
                             broadcaster.send_nodes(
-                                &mut cluster.iter().cloned(),
+                                &mut self.cluster.iter().cloned(),
                                 msgs::Message {
                                     src: self.node.clone(),
                                     msg: consensus.msg.into(),
@@ -482,6 +504,8 @@ where
                 };
             }
             msgs::MessageContent::Bump(bump) => {
+                return Ok(());
+
                 // We dont send any responses to bump messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, bump)
@@ -562,13 +586,15 @@ where
                     );
                 }
                 */
-                broadcaster.send(
-                    &promise_ok.target,
-                    msgs::Message {
-                        src: self.node.clone(),
-                        msg: promise_ok.msg.into(),
-                    },
-                );
+                if let Some(promise_ok) = promise_ok {
+                    broadcaster.send(
+                        &promise_ok.target,
+                        msgs::Message {
+                            src: self.node.clone(),
+                            msg: promise_ok.msg.into(),
+                        },
+                    );
+                }
             }
             msgs::MessageContent::PromisesOk(promisesok) => {
                 let acked = self.highest_acked.entry(msg.src).or_insert(0);
@@ -634,7 +660,7 @@ where
                     .map_err(|_e| ReceiveMessageError::Other("RecAck"))?;
 
                 broadcaster.send_nodes(
-                    &mut cluster.iter().cloned(),
+                    &mut self.cluster.iter().cloned(),
                     msgs::Message {
                         src: self.node.clone(),
                         msg: consensus.msg.into(),
@@ -761,7 +787,6 @@ where
 {
     pub async fn process(
         &mut self,
-        cluster: &BTreeSet<NodeId>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
     ) -> Result<(), ProcessError> {
         let msg = match self.msg_rx.recv().await {
@@ -771,10 +796,10 @@ where
 
         match msg {
             InternalMessage::IPC(ipc_msg) => self
-                .recv_ipc(ipc_msg, cluster, broadcaster)
+                .recv_ipc(ipc_msg, broadcaster)
                 .map_err(ProcessError::RecvIPC),
             InternalMessage::Message(message) => self
-                .recv_msg(message, cluster, broadcaster)
+                .recv_msg(message, broadcaster)
                 .map_err(ProcessError::RecvMsg),
         }
     }
@@ -1053,11 +1078,12 @@ where
     type Error = ();
 
     fn recv(&mut self, _: NodeId, payload: msgs::Commit<NodeId>) -> Result<Self::Output, ()> {
-        tracing::trace!("Commited Command");
-
         let cmd = match self.commands.get_mut(&payload.id) {
             Some(cmd) if cmd.phase.pending() => cmd,
-            _ => return Ok(()),
+            _ => {
+                tracing::warn!("Command is not pending");
+                return Ok(());
+            }
         };
 
         // TODO
@@ -1162,7 +1188,7 @@ where
         let ballot = payload.ballot.clone();
 
         cmd.rec_acks.insert(src, payload);
-        let r = self.cluster_size;
+        let r = self.cluster.len();
         // Check for number of responses
         if cmd.rec_acks.len() < r.saturating_sub(self.tolerated_failures) {
             return Err(());
@@ -1246,7 +1272,7 @@ where
 {
     type Output = (
         AllNodeBroadcast<Vec<msgs::CommitRequest<NodeId>>>,
-        ResponseMsg<NodeId, msgs::PromisesOk>,
+        Option<ResponseMsg<NodeId, msgs::PromisesOk>>,
     );
     type Error = ();
 
@@ -1259,16 +1285,13 @@ where
                     Some(cmd)
                         if matches!(cmd.phase, CommandPhase::Commit | CommandPhase::Execute) =>
                     {
-                        Some(timestamp)
+                        Some((payload.attached.node().clone(), timestamp))
                     }
                     _ => None,
                 });
 
         self.promises.union_detached(payload.detached);
-        self.promises.extend(
-            c.into_iter()
-                .map(|timestamp| (payload.attached.node().clone(), timestamp)),
-        );
+        self.promises.extend(c);
 
         // Update the highest continuous elements
         self.highest_continuous = self.promises.highest_contiguous(&self.highest_continuous);
@@ -1285,16 +1308,13 @@ where
             .map(|opid| msgs::CommitRequest { id: opid.clone() })
             .collect();
 
-        let reply_msg = msgs::PromisesOk {
+        let reply_msg = (self.highest_continuous.get(&src) > 0).then(|| msgs::PromisesOk {
             highest: self.highest_continuous.get(&src),
-        };
+        });
 
         Ok((
             AllNodeBroadcast { msg: requests },
-            ResponseMsg {
-                target: src,
-                msg: reply_msg,
-            },
+            reply_msg.map(|msg| ResponseMsg { target: src, msg }),
         ))
     }
 }
@@ -1347,64 +1367,37 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::tempo::promises::PromiseValue;
+
     use super::*;
 
     #[test]
     fn replica_bump() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         assert_eq!(0, replica.clock);
 
         replica.bump(0);
         assert_eq!(0, replica.clock);
-        /*
-        assert_eq!(
-            [Promise {
-                node: 0,
-                timestamp: 1
-            }]
-            .into_iter()
-            .collect::<BTreeSet<_>>(),
-            replica.detached
-        );
-        */
+
+        let mut detached_iter = replica.detached.iter();
+        assert_eq!(None, detached_iter.next(),);
+        drop(detached_iter);
 
         replica.bump(5);
+
         assert_eq!(5, replica.clock);
-        /*
+
+        let mut detached_iter = replica.detached.iter();
         assert_eq!(
-            [
-                Promise {
-                    node: 0,
-                    timestamp: 1
-                },
-                Promise {
-                    node: 0,
-                    timestamp: 2
-                },
-                Promise {
-                    node: 0,
-                    timestamp: 3
-                },
-                Promise {
-                    node: 0,
-                    timestamp: 4
-                },
-                Promise {
-                    node: 0,
-                    timestamp: 5
-                }
-            ]
-            .into_iter()
-            .collect::<BTreeSet<_>>(),
-            replica.detached
+            &PromiseValue::Ranged { start: 1, end: 5 },
+            detached_iter.next().unwrap()
         );
-        */
     }
 
     #[test]
     fn receive_bump() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
         assert_eq!(0, replica.clock);
         // assert!(replica.attached.is_empty());
         // assert!(replica.detached.is_empty());
@@ -1427,7 +1420,7 @@ mod tests {
 
     #[test]
     fn replica_proposal() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
         assert_eq!(0, replica.clock);
 
         let ret_t = replica.proposal(
@@ -1439,6 +1432,12 @@ mod tests {
         );
         assert_eq!(2, ret_t);
         assert_eq!(2, replica.clock);
+
+        let mut detached_iter = replica.detached.iter();
+        assert_eq!(
+            &PromiseValue::Single { timestamp: 1 },
+            detached_iter.next().unwrap()
+        );
         /*
         assert_eq!(
             [Promise {
@@ -1471,7 +1470,7 @@ mod tests {
 
     #[test]
     fn receive_proposal() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         let msg = msgs::Propose {
             id: OpId {
@@ -1528,7 +1527,7 @@ mod tests {
 
     #[test]
     fn receive_payload() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         assert_eq!(0, replica.clock);
         // assert!(replica.attached.is_empty());
@@ -1561,7 +1560,7 @@ mod tests {
 
     #[test]
     fn recv_propose_proposeack_fastpath() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         let (ack, _bump) = replica
             .recv(
@@ -1594,7 +1593,7 @@ mod tests {
     #[test]
     #[ignore = "Not sure what the correct implementation for this would be"]
     fn receive_consensus_for_unknown_command() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         let msg = msgs::Consensus {
             id: OpId {
@@ -1615,7 +1614,7 @@ mod tests {
 
     #[test]
     fn receive_consensus() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
         replica.tolerated_failures = 0;
 
         let _ = replica
@@ -1665,7 +1664,7 @@ mod tests {
     #[test]
     #[ignore = "Testing"]
     fn receive_recover() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         let _ = replica
             .recv(
@@ -1715,7 +1714,7 @@ mod tests {
 
     #[test]
     fn receive_promises() {
-        let mut replica = Replica::<(), _, (), _>::new(0, 3, (), 1);
+        let mut replica = Replica::<(), _, (), _>::new(0, vec![0, 1, 2], (), 1);
 
         let _responses = replica
             .recv(
@@ -1733,7 +1732,7 @@ mod tests {
         let cluster: BTreeSet<_> = [0].into_iter().collect();
         let mut broadcaster: HashMap<_, _> = [(0, VecDeque::new())].into_iter().collect();
 
-        let mut replica = Replica::<_, _, (), _>::new(0, 1, (), 1);
+        let mut replica = Replica::<_, _, (), _>::new(0, vec![0], (), 1);
 
         replica
             .recv_ipc(
@@ -1746,7 +1745,6 @@ mod tests {
                     quorum: [0].into_iter().collect(),
                     listeners: Vec::new(),
                 }),
-                &cluster,
                 &mut broadcaster,
             )
             .unwrap();
@@ -1756,7 +1754,7 @@ mod tests {
             dbg!(&msg);
             let done = matches!(msg.msg, msgs::MessageContent::Commit(_));
 
-            replica.recv_msg(msg, &cluster, &mut broadcaster).unwrap();
+            replica.recv_msg(msg, &mut broadcaster).unwrap();
 
             if done {
                 return;

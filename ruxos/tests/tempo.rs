@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ruxos::tempo::{self, replica::Receive};
+use ruxos::tempo::{self, replica::Receive, Replica};
 
 #[test]
 fn tempo_submit() {
@@ -73,4 +73,28 @@ fn tempo_submit() {
             panic!("We should immediately commit as all the nodes are fresh and should therefore all agree on the timestamp")
         }
     };
+}
+
+#[test]
+fn tempo_submit_hangs() {
+    let mut replica = tempo::Builder::new()
+        .id(0)
+        .nodes(vec![0])
+        .accepted_failures(0)
+        .finish::<(), (), ()>(());
+
+    replica
+        .recv(
+            0,
+            tempo::msgs::Propose {
+                id: tempo::replica::OpId {
+                    node: 0,
+                    counter: 1,
+                },
+                operation: (),
+                quroum: [0].into_iter().collect(),
+                timestamp: 1,
+            },
+        )
+        .unwrap();
 }

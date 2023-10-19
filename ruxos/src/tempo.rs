@@ -88,7 +88,7 @@ impl<NodeId> Builder<NodeId> {
             None => self.nodes.len() / 2,
         };
 
-        replica::Replica::new(replica_id, self.nodes.len(), state, tolerated_failures)
+        replica::Replica::new(replica_id, self.nodes, state, tolerated_failures)
     }
 }
 

@@ -70,14 +70,20 @@ where
 
         let (wait_tx, wait_rx) = tokio::sync::oneshot::channel();
 
-        // TODO
-        // Determine the quorum
-        let quorum = nodes;
+        // FIXME
+        // Currently the quorum is just the first n / 2 + 1 Nodes, if that contains the current
+        // node or the first n/2 + the current node
+        let mut quorum: BTreeSet<_> = nodes.iter().take(nodes.len() / 2).cloned().collect();
+        if quorum.contains(&self.node) {
+            quorum.insert(nodes.iter().nth(nodes.len() / 2 + 1).unwrap().clone());
+        } else {
+            quorum.insert(self.node.clone());
+        }
 
         let submit = ipc::Submit {
             id: op_id,
             operation: op,
-            quorum: quorum.clone(),
+            quorum,
             listeners: vec![wait_tx],
         };
 
