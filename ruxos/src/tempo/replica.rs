@@ -1294,7 +1294,6 @@ where
         self.promises.extend(c);
 
         // Update the highest continuous elements
-        let prev = self.highest_continuous.clone();
         self.highest_continuous = self.promises.highest_contiguous(&self.highest_continuous);
 
         /*
