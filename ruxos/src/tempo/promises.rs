@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::RangeInclusive,
+};
 
 use super::replica::OpId;
 
@@ -116,21 +119,20 @@ impl<NodeId> DetachedPromises<NodeId> {
         self.values.is_empty()
     }
 
-    /// Adds all the timestamps t `clock + 1 <= t <= timestamp - 1`
-    pub fn add(&mut self, clock: u64, timestamp: u64) {
-        let items = (timestamp - 1).saturating_sub(clock);
-        if items == 0 {
+    /// Adds all the timestamps t `clock + 1 <= t <= timestamp`
+    pub fn add(&mut self, range: RangeInclusive<u64>) {
+        if range.is_empty() {
             return;
         }
 
-        let n_promise = if items == 1 {
+        let n_promise = if range.clone().count() == 1 {
             PromiseValue::Single {
-                timestamp: clock + 1,
+                timestamp: *range.start(),
             }
         } else {
             PromiseValue::Ranged {
-                start: clock + 1,
-                end: timestamp - 1,
+                start: *range.start(),
+                end: *range.end(),
             }
         };
 
@@ -207,19 +209,17 @@ where
         let tmp: BTreeMap<_, _> = self
             .nodes
             .iter()
-            .map(|(key, node_proms)| {
+            .filter_map(|(key, node_proms)| {
                 let prev = core::cmp::max(previous.get(key), 1);
 
-                (
-                    key.clone(),
-                    node_proms
-                        .range(prev..)
-                        .zip(prev..)
-                        .take_while(|(test_val, c)| *test_val == c)
-                        .last()
-                        .map(|(c, _)| *c)
-                        .unwrap_or(0),
-                )
+                let value = node_proms
+                    .range(prev..)
+                    .zip(prev..)
+                    .take_while(|(test_val, c)| *test_val == c)
+                    .last()
+                    .map(|(c, _)| *c)?;
+
+                Some((key.clone(), value))
             })
             .collect();
 
@@ -283,7 +283,8 @@ where
 
         let n_promises: BTreeSet<_> = if let Some(prev_first) = self.last_lowest_elem.as_ref() {
             self.promises
-                .range(prev_first..)
+                // .range(prev_first..)
+                .iter()
                 .filter(|(key, _)| *key > smallest)
                 .cloned()
                 .collect()
@@ -387,16 +388,16 @@ mod tests {
 
         assert_eq!(Vec::<PromiseValue>::new(), detached.values);
 
-        detached.add(0, 2);
+        detached.add(1..=1);
         assert_eq!(vec![PromiseValue::Single { timestamp: 1 }], detached.values);
 
-        detached.add(1, 3);
+        detached.add(2..=2);
         assert_eq!(
             vec![PromiseValue::Ranged { start: 1, end: 2 }],
             detached.values
         );
 
-        detached.add(3, 5);
+        detached.add(4..=4);
         assert_eq!(
             vec![
                 PromiseValue::Ranged { start: 1, end: 2 },

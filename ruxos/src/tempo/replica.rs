@@ -258,7 +258,7 @@ where
     fn bump(&mut self, timestamp: u64) {
         let t = core::cmp::max(timestamp, self.clock);
 
-        self.detached.add(self.clock, t + 1);
+        self.detached.add(self.clock + 1..=t);
 
         self.clock = t;
     }
@@ -266,7 +266,7 @@ where
     fn proposal(&mut self, op_id: OpId<NodeId>, timestamp: u64) -> u64 {
         let t = core::cmp::max(timestamp, self.clock + 1);
 
-        self.detached.add(self.clock, t);
+        self.detached.add(self.clock + 1..=(t - 1));
         self.attached.attach(op_id, t);
 
         self.clock = t;
@@ -1294,7 +1294,18 @@ where
         self.promises.extend(c);
 
         // Update the highest continuous elements
+        let prev = self.highest_continuous.clone();
         self.highest_continuous = self.promises.highest_contiguous(&self.highest_continuous);
+
+        /*
+        if prev != self.highest_continuous {
+            tracing::warn!(
+                "New Highest Continuos: {:?} - Highest Acked {:?}",
+                self.highest_continuous.sorted(),
+                self.highest_acked.values().collect::<Vec<_>>()
+            );
+        }
+        */
 
         let requests: Vec<_> = payload
             .attached
@@ -1308,9 +1319,13 @@ where
             .map(|opid| msgs::CommitRequest { id: opid.clone() })
             .collect();
 
-        let reply_msg = (self.highest_continuous.get(&src) > 0).then(|| msgs::PromisesOk {
-            highest: self.highest_continuous.get(&src),
-        });
+        let reply_msg = self
+            .highest_continuous
+            .sorted()
+            .into_iter()
+            .min()
+            .filter(|_| self.highest_continuous.sorted().len() == self.cluster.len())
+            .map(|highest| msgs::PromisesOk { highest });
 
         Ok((
             AllNodeBroadcast { msg: requests },
