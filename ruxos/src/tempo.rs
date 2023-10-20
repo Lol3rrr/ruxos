@@ -82,10 +82,11 @@ impl<NodeId> Builder<NodeId> {
 
         let tolerated_failures = match self.accepted_failures {
             Some(fs) => {
-                assert!(self.nodes.len() >= fs * 2 + 1);
+                assert!(fs >= 1);
+                assert!(fs <= (self.nodes.len() - 1) / 2);
                 fs
             }
-            None => self.nodes.len() / 2,
+            None => (self.nodes.len() - 1) / 2,
         };
 
         replica::Replica::new(replica_id, self.nodes, state, tolerated_failures)
