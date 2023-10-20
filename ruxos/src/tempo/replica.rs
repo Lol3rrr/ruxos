@@ -1271,6 +1271,8 @@ where
     type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::Promises<NodeId>) -> Result<Self::Output, ()> {
+        let mut requests = Vec::new();
+
         let c =
             payload
                 .attached
@@ -1281,6 +1283,10 @@ where
                     {
                         Some((payload.attached.node().clone(), timestamp))
                     }
+                    Some(_) => {
+                        requests.push(msgs::CommitRequest { id: opid.clone() });
+                        None
+                    }
                     _ => None,
                 });
 
@@ -1290,22 +1296,8 @@ where
         // Update the highest continuous elements
         self.highest_continuous = self.promises.highest_contiguous();
 
-        let requests: Vec<_> = payload
-            .attached
-            .iter()
-            .filter_map(|promise| match self.commands.get(&promise.1) {
-                Some(cmd) if !matches!(cmd.phase, CommandPhase::Commit | CommandPhase::Execute) => {
-                    Some(promise.1)
-                }
-                _ => None,
-            })
-            .map(|opid| msgs::CommitRequest { id: opid.clone() })
-            .collect();
-
         let reply_msg = self
             .highest_continuous
-            .sorted()
-            .into_iter()
             .min()
             .filter(|_| self.highest_continuous.sorted().len() == self.cluster.len())
             .map(|highest| msgs::PromisesOk { highest });

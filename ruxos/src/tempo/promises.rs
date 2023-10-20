@@ -239,7 +239,7 @@ where
     where
         NodeId: Clone,
     {
-        let tmp: BTreeMap<_, _> = self
+        let tmp: Vec<_> = self
             .nodes
             .iter()
             .filter_map(|(key, node_proms)| {
@@ -333,7 +333,7 @@ where
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HighestContinuousPromise<NodeId> {
-    nodes: BTreeMap<NodeId, u64>,
+    nodes: Vec<(NodeId, u64)>,
 }
 
 impl<NodeId> HighestContinuousPromise<NodeId>
@@ -347,17 +347,25 @@ where
     }
 
     pub fn sorted(&self) -> Vec<u64> {
-        let mut tmp: Vec<_> = self.nodes.values().copied().collect();
+        let mut tmp: Vec<_> = self.nodes.iter().map(|(_, v)| v).copied().collect();
         tmp.sort_unstable();
         tmp
     }
 
+    pub fn min(&self) -> Option<u64> {
+        self.nodes.iter().map(|(_, v)| *v).min()
+    }
+
     pub fn get(&self, node: &NodeId) -> u64 {
-        self.nodes.get(node).copied().unwrap_or(0)
+        self.nodes
+            .iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, v)| *v)
+            .unwrap_or(0)
     }
 
     pub fn values(&self) -> impl Iterator<Item = &u64> + '_ {
-        self.nodes.values()
+        self.nodes.iter().map(|(_, v)| v)
     }
 }
 
