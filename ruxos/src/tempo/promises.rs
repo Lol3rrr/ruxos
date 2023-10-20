@@ -106,14 +106,14 @@ impl PromiseValue {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DetachedPromises<NodeId> {
     node: NodeId,
-    values: rangelist::RangeList,
+    values: Vec<PromiseValue>,
 }
 
 impl<NodeId> DetachedPromises<NodeId> {
     pub fn new(node: NodeId) -> Self {
         Self {
             node,
-            values: rangelist::RangeList::new(),
+            values: Vec::new(),
         }
     }
 
@@ -131,11 +131,29 @@ impl<NodeId> DetachedPromises<NodeId> {
             return;
         }
 
-        self.values.insert(range);
-    }
+        let n_promise = if range.clone().count() == 1 {
+            PromiseValue::Single {
+                timestamp: *range.start(),
+            }
+        } else {
+            PromiseValue::Ranged {
+                start: *range.start(),
+                end: *range.end(),
+            }
+        };
 
-    pub fn iter(&self) -> impl Iterator<Item = &RangeInclusive<u64>> + '_ {
-        self.values.iter()
+        match self.values.last_mut() {
+            Some(last) => {
+                if last.can_merge(&n_promise) {
+                    last.merge(n_promise);
+                } else {
+                    self.values.push(n_promise);
+                }
+            }
+            None => {
+                self.values.push(n_promise);
+            }
+        };
     }
 
     pub fn filtered(&self, hc: &BTreeMap<NodeId, u64>) -> Self
@@ -144,17 +162,24 @@ impl<NodeId> DetachedPromises<NodeId> {
     {
         let smallest = hc.values().min().copied().unwrap_or(0);
 
-        let values = self.values.after_iter(smallest);
-
-        let mut n_values = rangelist::RangeList::new();
-        for val in values {
-            n_values.insert(val.clone());
-        }
+        let values: Vec<_> = self
+            .values
+            .iter()
+            .filter(|entry| match entry {
+                PromiseValue::Single { timestamp } => *timestamp > smallest,
+                PromiseValue::Ranged { end, .. } => *end > smallest,
+            })
+            .cloned()
+            .collect();
 
         Self {
             node: self.node.clone(),
-            values: n_values,
+            values,
         }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PromiseValue> + '_ {
+        self.values.iter()
     }
 }
 
@@ -183,8 +208,11 @@ where
             .entry(detached.node)
             .or_insert_with(|| rangelist::RangeList::new());
 
-        for promise in detached.values.iter() {
-            let range = promise.clone();
+        for promise in detached.values {
+            let range = match promise {
+                PromiseValue::Single { timestamp } => timestamp..=timestamp,
+                PromiseValue::Ranged { start, end } => start..=end,
+            };
 
             promises.insert(range);
         }
@@ -371,6 +399,31 @@ mod tests {
             .can_merge(&PromiseValue::Ranged { start: 1, end: 4 }));
         assert!(PromiseValue::Ranged { start: 1, end: 3 }
             .can_merge(&PromiseValue::Ranged { start: 3, end: 5 }));
+    }
+
+    #[test]
+    fn detached_adds() {
+        let mut detached = DetachedPromises::new(0);
+
+        assert_eq!(Vec::<PromiseValue>::new(), detached.values);
+
+        detached.add(1..=1);
+        assert_eq!(vec![PromiseValue::Single { timestamp: 1 }], detached.values);
+
+        detached.add(2..=2);
+        assert_eq!(
+            vec![PromiseValue::Ranged { start: 1, end: 2 }],
+            detached.values
+        );
+
+        detached.add(4..=4);
+        assert_eq!(
+            vec![
+                PromiseValue::Ranged { start: 1, end: 2 },
+                PromiseValue::Single { timestamp: 4 }
+            ],
+            detached.values
+        );
     }
 
     #[test]
