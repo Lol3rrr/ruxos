@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Stdin, StdinLock, Stdout, StdoutLock, Write};
+use std::io::{BufRead, BufReader, Read, Stdin, Stdout, Write};
 
 pub mod workflow;
 pub use workflow::{Message, MessageBody};
@@ -78,7 +78,7 @@ where
 {
     let msg = receiver
         .recv::<workflow::general::Request>()
-        .map_err(|e| ())?;
+        .map_err(|_e| ())?;
 
     let (id, nodes) = match msg.body().content() {
         workflow::general::Request::Init { node_id, node_ids } => (node_id, node_ids),

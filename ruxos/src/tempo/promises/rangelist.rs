@@ -1,5 +1,7 @@
 use std::ops::RangeInclusive;
 
+/// A RangeList is a relatively simple data structure that allows you to store multiple Ranges of
+/// u64's and merges these ranges together if possible
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RangeList {
@@ -49,7 +51,7 @@ impl RangeList {
                                 .find(|(_, r)| r.end() < nrange.start());
 
                             match break_idx {
-                                Some((bidx, break_range)) => {
+                                Some((bidx, _)) => {
                                     self.ranges[bidx + 1] = nrange;
                                     self.ranges.drain(bidx + 2..=idx);
 
@@ -88,27 +90,72 @@ impl RangeList {
         }
     }
 
+    /// Inserts the given Range into the list of ranges
     pub fn insert(&mut self, range: RangeInclusive<u64>) {
         self.raw_insert(range);
 
-        let mut idx = 0;
-        while idx < self.ranges.len() - 1 {
-            let first = &self.ranges[idx];
-            let second = &self.ranges[idx + 1];
+        // We iterate backwards to reduce the number of moves that need to be done
+        let mut idx = self.ranges.len() - 1;
+        while idx > 0 {
+            let first = &self.ranges[idx - 1];
+            let second = &self.ranges[idx];
 
             if first.end() + 1 > second.start() - 1 {
                 let nrange = *first.start()..=*second.end();
 
-                self.ranges[idx] = nrange;
-                self.ranges.remove(idx + 1);
+                self.ranges[idx - 1] = nrange;
+                self.ranges.remove(idx);
             }
 
-            idx += 1;
+            idx = idx.saturating_sub(1);
         }
     }
 
+    /// Gets the first Range in the list
     pub fn first(&self) -> Option<&RangeInclusive<u64>> {
         self.ranges.first()
+    }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &RangeInclusive<u64>> + '_ {
+        self.ranges.iter()
+    }
+
+    /// Returns an iterator over all the ranges that contain the point or are after the point
+    pub fn after_iter(&self, point: u64) -> impl Iterator<Item = &RangeInclusive<u64>> + '_ {
+        let mut left = 0;
+        let mut right = self.ranges.len();
+
+        let mut idx = (right - left) / 2 + left;
+        while left < right {
+            idx = (right - left) / 2 + left;
+            let entry = &self.ranges[idx];
+            if entry.contains(&point) {
+                break;
+            }
+
+            if left == right - 1 {
+                break;
+            }
+
+            if *entry.start() > point {
+                right = idx;
+            } else if *entry.end() < point {
+                left = idx;
+            }
+        }
+
+        if *self.ranges[idx].end() < point {
+            idx += 1;
+        }
+
+        self.ranges[idx..].into_iter()
     }
 }
 
@@ -263,5 +310,34 @@ mod tests {
 
         list.insert(12..=20);
         assert_eq!(vec![2..=10, 12..=20], list.ranges);
+    }
+
+    #[test]
+    fn after_iter() {
+        let mut list = RangeList::new();
+
+        list.insert(2..=8);
+        list.insert(12..=18);
+        list.insert(22..=28);
+
+        let mut iter_0 = list.after_iter(0);
+        assert_eq!(Some(&(2..=8)), iter_0.next());
+        assert_eq!(Some(&(12..=18)), iter_0.next());
+        assert_eq!(Some(&(22..=28)), iter_0.next());
+        assert_eq!(None, iter_0.next());
+
+        let mut iter_5 = list.after_iter(5);
+        assert_eq!(Some(&(2..=8)), iter_5.next());
+        assert_eq!(Some(&(12..=18)), iter_5.next());
+        assert_eq!(Some(&(22..=28)), iter_5.next());
+        assert_eq!(None, iter_5.next());
+
+        let mut iter_10 = list.after_iter(10);
+        assert_eq!(Some(&(12..=18)), iter_10.next());
+        assert_eq!(Some(&(22..=28)), iter_10.next());
+        assert_eq!(None, iter_10.next());
+
+        let mut iter_30 = list.after_iter(30);
+        assert_eq!(None, iter_30.next());
     }
 }
