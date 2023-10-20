@@ -7,6 +7,8 @@ use std::{
     },
 };
 
+use rand::seq::IteratorRandom;
+
 use crate::tempo::{ipc, replica::OpId};
 
 use super::{msgs, replica::InternalMessage, Operation};
@@ -61,6 +63,25 @@ where
         self.tx.send(InternalMessage::Message(msg)).map_err(|_e| ())
     }
 
+    fn choose_quorum(&self, nodes: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        // FIXME
+        // Currently the quorum is just the first n / 2 + 1 Nodes, if that contains the current
+        // node or the first n/2 + the current node
+        let mut quorum: BTreeSet<_> = nodes
+            .iter()
+            .choose_multiple(&mut rand::thread_rng(), nodes.len() / 2)
+            .into_iter()
+            .cloned()
+            .collect();
+        if quorum.contains(&self.node) {
+            quorum.insert(nodes.iter().nth(nodes.len() / 2 + 1).unwrap().clone());
+        } else {
+            quorum.insert(self.node.clone());
+        }
+
+        quorum
+    }
+
     /// Submits the Operation to the cluster
     pub async fn submit(&self, op: O, nodes: BTreeSet<NodeId>) -> Result<O::Result, SubmitError> {
         let op_id = OpId {
@@ -70,15 +91,7 @@ where
 
         let (wait_tx, wait_rx) = tokio::sync::oneshot::channel();
 
-        // FIXME
-        // Currently the quorum is just the first n / 2 + 1 Nodes, if that contains the current
-        // node or the first n/2 + the current node
-        let mut quorum: BTreeSet<_> = nodes.iter().take(nodes.len() / 2).cloned().collect();
-        if quorum.contains(&self.node) {
-            quorum.insert(nodes.iter().nth(nodes.len() / 2 + 1).unwrap().clone());
-        } else {
-            quorum.insert(self.node.clone());
-        }
+        let quorum = self.choose_quorum(&nodes);
 
         let submit = ipc::Submit {
             id: op_id,
