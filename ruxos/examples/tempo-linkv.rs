@@ -125,14 +125,14 @@ fn main() {
     runtime.spawn(async move {
         loop {
             handle.try_execute();
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     });
     let handle = replica.handle();
     runtime.spawn(async move {
         loop {
             handle.promises();
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(4)).await;
         }
     });
 
