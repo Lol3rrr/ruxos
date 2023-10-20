@@ -1387,7 +1387,10 @@ mod tests {
         assert_eq!(5, replica.clock);
 
         let mut detached_iter = replica.detached.iter();
-        assert_eq!(&(1..=5), detached_iter.next().unwrap());
+        assert_eq!(
+            &PromiseValue::Ranged { start: 1, end: 5 },
+            detached_iter.next().unwrap()
+        );
     }
 
     #[test]
@@ -1429,7 +1432,10 @@ mod tests {
         assert_eq!(2, replica.clock);
 
         let mut detached_iter = replica.detached.iter();
-        assert_eq!(&(1..=1), detached_iter.next().unwrap());
+        assert_eq!(
+            &PromiseValue::Single { timestamp: 1 },
+            detached_iter.next().unwrap()
+        );
         /*
         assert_eq!(
             [Promise {

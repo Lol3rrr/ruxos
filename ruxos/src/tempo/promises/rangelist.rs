@@ -96,7 +96,7 @@ impl RangeList {
 
         // We iterate backwards to reduce the number of moves that need to be done
         let mut idx = self.ranges.len() - 1;
-        while idx > 0 {
+        for idx in (1..self.ranges.len()).rev() {
             let first = &self.ranges[idx - 1];
             let second = &self.ranges[idx];
 
@@ -106,8 +106,6 @@ impl RangeList {
                 self.ranges[idx - 1] = nrange;
                 self.ranges.remove(idx);
             }
-
-            idx = idx.saturating_sub(1);
         }
     }
 

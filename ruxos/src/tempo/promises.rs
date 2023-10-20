@@ -162,15 +162,19 @@ impl<NodeId> DetachedPromises<NodeId> {
     {
         let smallest = hc.values().min().copied().unwrap_or(0);
 
-        let values: Vec<_> = self
+        let starting_point = self
             .values
             .iter()
-            .filter(|entry| match entry {
-                PromiseValue::Single { timestamp } => *timestamp > smallest,
-                PromiseValue::Ranged { end, .. } => *end > smallest,
+            .enumerate()
+            .rev()
+            .find(|(_, entry)| match entry {
+                PromiseValue::Single { timestamp } => *timestamp <= smallest,
+                PromiseValue::Ranged { end, .. } => *end <= smallest,
             })
-            .cloned()
-            .collect();
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let values = self.values[starting_point..].to_vec();
 
         Self {
             node: self.node.clone(),
