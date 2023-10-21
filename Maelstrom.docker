@@ -16,5 +16,11 @@ ENV PATH=$PATH:~/.cargo/bin;
 RUN ~/.cargo/bin/rustup toolchain install nightly;
 RUN ~/.cargo/bin/rustup default nightly;
 
+# Install samply for profiling
+RUN ~/.cargo/bin/cargo install samply;
+
 # Clone Maelstrom for testing
 RUN git clone https://github.com/jepsen-io/maelstrom.git;
+
+# Update Jepsen version for maelstrom
+RUN sed -i 's/\[jepsen "0.3.1"\]/\[jepsen "0.3.4"\]/' maelstrom/project.clj
