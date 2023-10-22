@@ -104,7 +104,7 @@ fn main() {
         let tracer = opentelemetry_otlp::new_pipeline().tracing()
             .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr))
             .with_trace_config(opentelemetry_sdk::trace::config().with_resource(opentelemetry_sdk::Resource::new(vec![opentelemetry_api::KeyValue::new("service.name", "tempo-linkv")])))
-            .with_batch_config(BatchConfig::default().with_scheduled_delay(Duration::from_millis(100)).with_max_concurrent_exports(2))
+            .with_batch_config(BatchConfig::default().with_scheduled_delay(Duration::from_millis(10)).with_max_queue_size(4096))
             .install_batch(opentelemetry::runtime::Tokio)
             .unwrap();
 

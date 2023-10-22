@@ -282,17 +282,26 @@ impl<O, NodeId, V, T> Replica<O, NodeId, V, T>
 where
     NodeId: Clone + Ord,
 {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn get_promises(&mut self) -> Option<msgs::Promises<NodeId>> {
-        let attached = if self.highest_acked.len() == self.cluster.len() {
-            self.attached.filtered(&self.highest_acked)
-        } else {
-            self.attached.clone()
+        let attached = {
+            let _entered = tracing::debug_span!("attached").entered();
+
+            if self.highest_acked.len() == self.cluster.len() {
+                self.attached.filtered(&self.highest_acked)
+            } else {
+                self.attached.clone()
+            }
         };
 
-        let detached = if self.highest_acked.len() == self.cluster.len() {
-            self.detached.filtered(&self.highest_acked)
-        } else {
-            self.detached.clone()
+        let detached = {
+            let _entered = tracing::debug_span!("detached").entered();
+
+            if self.highest_acked.len() == self.cluster.len() {
+                self.detached.filtered(&self.highest_acked)
+            } else {
+                self.detached.clone()
+            }
         };
 
         if detached.is_empty() && attached.len() == 0 {
