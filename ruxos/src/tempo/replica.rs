@@ -746,6 +746,11 @@ where
             for id in elems {
                 let cmd = self.commands.get_mut(&id).expect("We got the IDs by iterating over all the commands so every ID is also contained in the commands");
 
+                let _entered_cmd_span = cmd.span.take().map(|s| s.entered());
+                let _entered = _entered_cmd_span
+                    .as_ref()
+                    .map(|s| tracing::debug_span!(parent: s, "execute").entered());
+
                 // Execute command
                 let cmd_res = cmd.operation.apply(&mut self.state);
 
@@ -756,8 +761,6 @@ where
                     // There is nothing we can do to recover here anyway
                     let _ = channel.send(cmd_res.clone());
                 }
-
-                cmd.span.take();
 
                 cmd.phase = CommandPhase::Execute;
             }
