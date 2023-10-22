@@ -7,7 +7,7 @@ pub enum IPCRequest<O, NodeId, V> {
     Submit(Submit<O, NodeId, V>),
     TryExecute(TryExecute),
     LivenessCheck(LivenessCheck),
-    Promises,
+    Promises(Promises),
 }
 
 #[derive(Debug)]
@@ -51,3 +51,9 @@ pub struct TryExecute {}
 
 #[derive(Debug)]
 pub struct LivenessCheck {}
+
+#[derive(Debug)]
+pub struct Promises {
+    #[cfg(feature = "tracing")]
+    pub span: tracing::Span,
+}

@@ -63,7 +63,7 @@ pub struct MaelstromBroadcaster {
 impl Broadcaster<KVOp, String> for MaelstromBroadcaster {
     fn send(&mut self, target: &String, content: tempo::msgs::Message<KVOp, String>) {
         if target == &self.node {
-            if let Err(e) = self.inner_handle.message(content) {
+            if let Err(_e) = self.inner_handle.message(content) {
                 tracing::error!("Sending Message to local Node");
             }
         } else {
@@ -206,7 +206,7 @@ fn main() {
         >() {
             match tmp.body().content() {
                 maelstrom_api::workflow::linear_kv::Request::Custom { content } => {
-                    if let Err(e) = handle.message(content.clone()) {
+                    if let Err(_e) = handle.message(content.clone()) {
                         tracing::error!("Handling Message");
                     }
                 }
@@ -253,7 +253,7 @@ fn main() {
 
         loop {
             match replica.process( &mut broadcaster).await {
-                Ok(r) => {}
+                Ok(_) => {}
                 Err(e) => {
                     tracing::error!("Error Processing: {:?}", e);
                 }

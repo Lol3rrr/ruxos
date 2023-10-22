@@ -400,7 +400,9 @@ where
 
                 todo!()
             }
-            ipc::IPCRequest::Promises => {
+            ipc::IPCRequest::Promises(promises) => {
+                let _entered = promises.span.entered();
+
                 let msg = match self.get_promises() {
                     Some(m) => m,
                     None => return Ok(()),

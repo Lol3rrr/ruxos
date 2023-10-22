@@ -51,10 +51,14 @@ where
     }
 
     /// Initiate sending the Promises to the other nodes in the system:
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn promises(&self) {
-        let _ = self
-            .tx
-            .send(InternalMessage::IPC(ipc::IPCRequest::Promises));
+        let _ = self.tx.send(InternalMessage::IPC(ipc::IPCRequest::Promises(
+            ipc::Promises {
+                #[cfg(feature = "tracing")]
+                span: tracing::debug_span!(parent: tracing::Span::current(), "ipc"),
+            },
+        )));
     }
 
     /// Forwards a message received from a different Replica in the system to the replica
