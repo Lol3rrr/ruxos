@@ -101,6 +101,8 @@ where
             operation: op,
             quorum,
             listeners: vec![wait_tx],
+            #[cfg(feature = "tracing")]
+            span: tracing::debug_span!("IPC Request"),
         };
 
         // Send Messages to cluster

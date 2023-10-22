@@ -170,6 +170,9 @@ where
     execute_channels: Vec<tokio::sync::oneshot::Sender<V>>,
     consensus_acks: BTreeMap<Ballot<NodeId>, usize>,
     rec_acks: BTreeMap<NodeId, msgs::RecAck<NodeId>>,
+
+    #[cfg(feature = "tracing")]
+    span: Option<Box<tracing::Span>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -335,6 +338,9 @@ where
                         execute_channels: payload.listeners,
                         consensus_acks: BTreeMap::new(),
                         rec_acks: BTreeMap::new(),
+
+                        #[cfg(feature = "tracing")]
+                        span: Some(Box::new(payload.span)),
                     },
                 );
 
@@ -469,6 +475,13 @@ where
                     .map_err(|_e| ReceiveMessageError::Other("Payload"))?;
             }
             msgs::MessageContent::ProposeAck(pack) => {
+                #[cfg(feature = "tracing")]
+                let _entered = self
+                    .commands
+                    .get(&pack.id)
+                    .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
+                    .flatten();
+
                 match self
                     .recv(msg.src, pack)
                     .map_err(|_e| ReceiveMessageError::Other("ProposeAck"))?
@@ -506,6 +519,13 @@ where
                     .map_err(|_e| ReceiveMessageError::Other("Bump"))?;
             }
             msgs::MessageContent::Commit(commit) => {
+                #[cfg(feature = "tracing")]
+                let _entered = self
+                    .commands
+                    .get(&commit.id)
+                    .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
+                    .flatten();
+
                 // We dont send any responses to commit messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, commit)
@@ -829,6 +849,9 @@ where
                         execute_channels: Vec::new(),
                         consensus_acks: BTreeMap::new(),
                         rec_acks: BTreeMap::new(),
+
+                        #[cfg(feature = "tracing")]
+                        span: None,
                     },
                 );
             }
@@ -887,6 +910,9 @@ where
                         execute_channels: Vec::new(),
                         consensus_acks: BTreeMap::new(),
                         rec_acks: BTreeMap::new(),
+
+                        #[cfg(feature = "tracing")]
+                        span: None,
                     },
                 );
 
@@ -1734,6 +1760,7 @@ mod tests {
                     operation: (),
                     quorum: [0].into_iter().collect(),
                     listeners: Vec::new(),
+                    span: tracing::info_span!("Testing"),
                 }),
                 &mut broadcaster,
             )

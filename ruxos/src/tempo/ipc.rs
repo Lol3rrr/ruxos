@@ -16,6 +16,8 @@ pub struct Submit<O, NodeId, V> {
     pub operation: O,
     pub quorum: BTreeSet<NodeId>,
     pub listeners: Vec<tokio::sync::oneshot::Sender<V>>,
+    #[cfg(feature = "tracing")]
+    pub span: tracing::Span,
 }
 
 impl<O, NodeId, V> PartialEq for Submit<O, NodeId, V>
@@ -38,6 +40,8 @@ where
             operation: self.operation.clone(),
             quorum: self.quorum.clone(),
             listeners: Vec::new(),
+            #[cfg(feature = "tracing")]
+            span: self.span.clone(),
         }
     }
 }
