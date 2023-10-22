@@ -93,8 +93,10 @@ fn main() {
         .build()
         .unwrap();
 
+    let oltp_addr = "http://192.168.10.9:4317";
+
     let subscriber = runtime.block_on(async move {
-        let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://tempo.service.consul:4317")).install_batch(opentelemetry::runtime::Tokio).unwrap();
+        let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr)).install_batch(opentelemetry::runtime::Tokio).unwrap();
 
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
