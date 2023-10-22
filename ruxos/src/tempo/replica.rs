@@ -478,6 +478,9 @@ where
                     .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
                     .flatten();
 
+                #[cfg(feature = "tracing")]
+                let _entered = tracing::trace_span!("propose-ack").entered();
+
                 match self
                     .recv(msg.src, pack)
                     .map_err(|_e| ReceiveMessageError::Other("ProposeAck"))?
@@ -521,6 +524,9 @@ where
                     .get(&commit.id)
                     .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
                     .flatten();
+
+                #[cfg(feature = "tracing")]
+                let _entered = tracing::trace_span!("commit").entered();
 
                 // We dont send any responses to commit messages so there is no nothing else to do
                 // here
