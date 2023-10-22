@@ -57,7 +57,7 @@ pub struct MaelstromBroadcaster {
         HashMap<usize, usize>,
         maelstrom_api::workflow::linear_kv::Response,
     >,
-    other: tokio::sync::mpsc::UnboundedSender<OutputMessage>,
+    other: tokio::sync::mpsc::UnboundedSender<OutputMessageWrapper>,
 }
 
 impl Broadcaster<KVOp, String> for MaelstromBroadcaster {
@@ -67,14 +67,18 @@ impl Broadcaster<KVOp, String> for MaelstromBroadcaster {
                 tracing::error!("Sending Message to local Node");
             }
         } else {
-            let _ = self.other.send(OutputMessage::Internal {
+            let _ = self.other.send(OutputMessageWrapper { msg: OutputMessage::Internal {
                 target: target.clone(),
                 msg: content,
-            });
+            }, span: tracing::Span::current() });
         }
     }
 }
 
+struct OutputMessageWrapper {
+    msg: OutputMessage,
+    span: tracing::Span,
+}
 enum OutputMessage {
     Res {
         src_msg: u64,
@@ -159,9 +163,10 @@ fn main() {
         let mut node_msg_rx = node_msg_rx;
 
         while let Some(msg) = node_msg_rx.blocking_recv() {
-            let _entered = tracing::debug_span!("send-msg");
+            let _entered = msg.span.entered();
+            let _send_entered = tracing::debug_span!("send-msg");
 
-            match msg {
+            match msg.msg {
                 OutputMessage::Res {
                     src_msg,
                     res,
@@ -233,7 +238,7 @@ fn main() {
 
                         tracing::debug!("Response {:?}", res);
 
-                        let _ = node_msg_tx.send(OutputMessage::Res { src_msg: src_msg_id, target: src_node, res });
+                        let _ = node_msg_tx.send(OutputMessageWrapper { msg: OutputMessage::Res { src_msg: src_msg_id, target: src_node, res }, span: tracing::Span::current() });
                     });
                 }
             };
