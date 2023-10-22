@@ -312,7 +312,6 @@ where
     O: Operation<T> + Clone,
     O::Result: Clone,
 {
-    #[tracing::instrument(skip(self, req, broadcaster))]
     pub fn recv_ipc(
         &mut self,
         req: ipc::IPCRequest<O, NodeId, O::Result>,
@@ -432,7 +431,6 @@ where
     O: Clone,
     V: Clone,
 {
-    #[tracing::instrument(skip(self, msg, broadcaster))]
     pub fn recv_msg(
         &mut self,
         msg: msgs::Message<O, NodeId>,
@@ -534,6 +532,16 @@ where
                     .map_err(|_e| ReceiveMessageError::Other("Commit"))?;
             }
             msgs::MessageContent::Consensus(consensus) => {
+                #[cfg(feature = "tracing")]
+                let _entered = self
+                    .commands
+                    .get(&consensus.id)
+                    .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
+                    .flatten();
+
+                #[cfg(feature = "tracing")]
+                let _entered = tracing::trace_span!("consensus").entered();
+
                 let consensus_resp = self
                     .recv(msg.src, consensus)
                     .map_err(|_e| ReceiveMessageError::Other("Consensus"))?;
@@ -563,6 +571,16 @@ where
                 };
             }
             msgs::MessageContent::ConsensusAck(cack) => {
+                #[cfg(feature = "tracing")]
+                let _entered = self
+                    .commands
+                    .get(&cack.id)
+                    .map(|c| c.span.as_ref().map(|s| s.clone().entered()))
+                    .flatten();
+
+                #[cfg(feature = "tracing")]
+                let _entered = tracing::trace_span!("consensus-ack").entered();
+
                 match self
                     .recv(msg.src, cack)
                     .map_err(|_e| ReceiveMessageError::Other("ConsensusAck"))?
@@ -701,7 +719,6 @@ where
     O: Operation<T> + Clone,
     O::Result: Clone,
 {
-    #[tracing::instrument(skip(self, nodes))]
     pub fn try_execute(&mut self, nodes: &[NodeId]) {
         // tracing::trace!("Attemping Execute");
 
