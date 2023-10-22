@@ -3,9 +3,9 @@ use std::{
     time::Duration,
 };
 
+use opentelemetry::sdk::trace::BatchConfig;
 use opentelemetry_otlp::WithExportConfig;
 use ruxos::tempo::{self, replica::Broadcaster};
-use tracing::subscriber;
 use tracing_subscriber::{Registry, prelude::__tracing_subscriber_SubscriberExt};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -96,7 +96,12 @@ fn main() {
     let oltp_addr = "http://192.168.10.9:4317";
 
     let subscriber = runtime.block_on(async move {
-        let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr)).install_batch(opentelemetry::runtime::Tokio).unwrap();
+        let tracer = opentelemetry_otlp::new_pipeline().tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr))
+            .with_trace_config(opentelemetry_sdk::trace::config().with_resource(opentelemetry_sdk::Resource::new(vec![opentelemetry_api::KeyValue::new("service.name", "tempo-linkv")])))
+            .with_batch_config(BatchConfig::default().with_scheduled_delay(Duration::from_millis(250)))
+            .install_batch(opentelemetry::runtime::Tokio)
+            .unwrap();
 
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
