@@ -1346,9 +1346,14 @@ where
                     _ => None,
                 });
 
-        self.promises.union_detached(payload.detached);
-        self.promises.extend(c);
-
+        {
+            let _entered = tracing::debug_span!("union-detached");
+            self.promises.union_detached(payload.detached);
+        }
+        {
+            let _entered = tracing::debug_span!("extend-c");
+            self.promises.extend(c);
+        }
         // Update the highest continuous elements
         self.highest_continuous = self.promises.highest_contiguous();
 
