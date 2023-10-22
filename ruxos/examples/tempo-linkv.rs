@@ -95,6 +95,7 @@ fn main() {
 
     let oltp_addr = "http://192.168.10.9:4317";
 
+    #[cfg(all())]
     let subscriber = runtime.block_on(async move {
         let tracer = opentelemetry_otlp::new_pipeline().tracing()
             .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr))
@@ -103,19 +104,15 @@ fn main() {
             .install_batch(opentelemetry::runtime::Tokio)
             .unwrap();
 
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
-        Registry::default().with(telemetry)
+         tracing_opentelemetry::layer().with_tracer(tracer)
     });
-
-
-    /*
-    let subscriber = Registry::default().with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr)
-            .with_ansi(false)
+    #[cfg(any())]
+    let subscriber = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_ansi(false);
             
-            );
-            */
     
+    let subscriber = Registry::default().with(tracing_subscriber::filter::filter_fn(|span| {
+            span.target().contains("tempo")
+        })).with(subscriber);
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
