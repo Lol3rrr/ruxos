@@ -577,7 +577,7 @@ where
                 };
             }
             msgs::MessageContent::Promises(promises) => {
-                tracing::debug!("Got Promises Message");
+                // tracing::debug!("Got Promises Message");
 
                 let (_commit_requests, promise_ok) = self
                     .recv(msg.src, promises)
@@ -697,10 +697,10 @@ where
 {
     #[tracing::instrument(skip(self, nodes))]
     pub fn try_execute(&mut self, nodes: &[NodeId]) {
-        tracing::trace!("Attemping Execute");
+        // tracing::trace!("Attemping Execute");
 
         let h = self.highest_continuous.sorted();
-        tracing::trace!("H {:?}", h);
+        // tracing::trace!("H {:?}", h);
 
         let limit = match h.get(nodes.len() / 2).copied() {
             Some(l) => l,
@@ -732,6 +732,8 @@ where
                     // There is nothing we can do to recover here anyway
                     let _ = channel.send(cmd_res.clone());
                 }
+
+                cmd.span.take();
 
                 cmd.phase = CommandPhase::Execute;
             }
