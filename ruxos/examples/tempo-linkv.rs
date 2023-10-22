@@ -159,6 +159,8 @@ fn main() {
         let mut node_msg_rx = node_msg_rx;
 
         while let Some(msg) = node_msg_rx.blocking_recv() {
+            let _entered = tracing::debug_span!("send-msg");
+
             match msg {
                 OutputMessage::Res {
                     src_msg,
