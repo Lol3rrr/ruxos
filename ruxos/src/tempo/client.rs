@@ -74,7 +74,7 @@ where
             .cloned()
             .collect();
         if quorum.contains(&self.node) {
-            quorum.insert(nodes.iter().nth(nodes.len() / 2 + 1).unwrap().clone());
+            quorum.insert(nodes.iter().find(|n| !quorum.contains(n)).unwrap().clone());
         } else {
             quorum.insert(self.node.clone());
         }
