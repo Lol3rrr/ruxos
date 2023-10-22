@@ -318,8 +318,6 @@ where
         req: ipc::IPCRequest<O, NodeId, O::Result>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
     ) -> Result<(), ReceiveIPCError> {
-        tracing::trace!("Handling IPC");
-
         match req {
             ipc::IPCRequest::Submit(payload) => {
                 let t = self.clock + 1;
@@ -440,8 +438,6 @@ where
         msg: msgs::Message<O, NodeId>,
         broadcaster: &mut dyn Broadcaster<O, NodeId>,
     ) -> Result<(), ReceiveMessageError> {
-        tracing::trace!("Handling Message");
-
         match msg.msg {
             msgs::MessageContent::Propose(propose) => {
                 match self
@@ -972,6 +968,8 @@ where
     type Error = ();
 
     fn recv(&mut self, src: NodeId, payload: msgs::ProposeAck<NodeId>) -> Result<Self::Output, ()> {
+        tracing::trace!("Received ProposeAck");
+
         let (quorum, responses) = match self.commands.get_mut(&payload.id) {
             Some(cmd) => match &mut cmd.phase {
                 CommandPhase::Propose { responses } => (&cmd.quroum, responses),
@@ -989,6 +987,8 @@ where
         let t = responses.values().copied().max().unwrap_or(0);
 
         if responses.values().copied().filter(|v| *v == t).count() >= self.tolerated_failures {
+            tracing::trace!("Taking Fast-Path");
+
             Ok(Some(ProposeResult::Commit(AllNodeBroadcast {
                 msg: msgs::Commit {
                     id: payload.id,
@@ -996,6 +996,8 @@ where
                 },
             })))
         } else {
+            tracing::trace!("Taking Slow-Path");
+
             Ok(Some(ProposeResult::Consensus(AllNodeBroadcast {
                 msg: msgs::Consensus {
                     id: payload.id,
@@ -1098,6 +1100,8 @@ where
     type Error = ();
 
     fn recv(&mut self, _: NodeId, payload: msgs::Commit<NodeId>) -> Result<Self::Output, ()> {
+        tracing::trace!("Received Commit");
+
         let cmd = match self.commands.get_mut(&payload.id) {
             Some(cmd) if cmd.phase.pending() => cmd,
             _ => {

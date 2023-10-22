@@ -108,15 +108,14 @@ fn main() {
         Registry::default().with(telemetry)
     });
 
+
     /*
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
+    let subscriber = Registry::default().with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr)
             .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
-            .finish(),
-    ).unwrap();
-    */
+            
+            );
+            */
+    
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
