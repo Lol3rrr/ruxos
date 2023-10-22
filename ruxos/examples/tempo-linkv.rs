@@ -3,7 +3,9 @@ use std::{
     time::Duration,
 };
 
+use opentelemetry_otlp::WithExportConfig;
 use ruxos::tempo::{self, replica::Broadcaster};
+use tracing_subscriber::{Registry, prelude::__tracing_subscriber_SubscriberExt};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum KVOp {
@@ -85,6 +87,13 @@ enum OutputMessage {
 }
 
 fn main() {
+    let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://tempo.service.consul:4317")).install_batch(opentelemetry::runtime::Tokio).unwrap();
+
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    let subscriber = Registry::default().with(telemetry);
+
+    /*
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
@@ -92,6 +101,9 @@ fn main() {
             .with_max_level(tracing::Level::WARN)
             .finish(),
     ).unwrap();
+    */
+
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let (mut tx, mut rx) = maelstrom_api::io_recv_send();
 

@@ -27,3 +27,6 @@ serde_json = "1.0.105"
 tokio = { version = "1.31.0", default-features = false, features = ["rt", "macros", "signal"] }
 tracing = { version = "0.1.37", features = ["async-await"] }
 tracing-subscriber = "0.3.17"
+opentelemetry = { version = "0.20", features = ["rt-tokio"] }
+tracing-opentelemetry = { version = "0.21" }
+opentelemetry-otlp = { version = "0.13" }
