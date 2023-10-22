@@ -601,7 +601,8 @@ where
                 };
             }
             msgs::MessageContent::Promises(promises) => {
-                // tracing::debug!("Got Promises Message");
+                #[cfg(feature = "tracing")]
+                let _entered = tracing::debug_span!("promises").entered();
 
                 let (_commit_requests, promise_ok) = self
                     .recv(msg.src, promises)
@@ -720,10 +721,10 @@ where
     O::Result: Clone,
 {
     pub fn try_execute(&mut self, nodes: &[NodeId]) {
-        // tracing::trace!("Attemping Execute");
+        #[cfg(feature = "tracing")]
+        let _entered = tracing::debug_span!("try-execute").entered();
 
         let h = self.highest_continuous.sorted();
-        // tracing::trace!("H {:?}", h);
 
         let limit = match h.get(nodes.len() / 2).copied() {
             Some(l) => l,
