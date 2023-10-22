@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Stdin, Stdout, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Stdin, Stdout, Write};
 
 pub mod workflow;
 pub use workflow::{Message, MessageBody};
@@ -7,15 +7,23 @@ pub struct Receiver<R> {
     reader: BufReader<R>,
 }
 
-pub struct Sender<W> {
-    writer: W,
+pub struct Sender<W>
+where
+    W: Write,
+{
+    writer: BufWriter<W>,
 }
 
 impl<R> Receiver<R> {}
 
-impl<W> Sender<W> {
+impl<W> Sender<W>
+where
+    W: Write,
+{
     pub fn new(writer: W) -> Self {
-        Self { writer }
+        Self {
+            writer: BufWriter::new(writer),
+        }
     }
 }
 
@@ -29,6 +37,7 @@ where
     {
         serde_json::to_writer(&mut self.writer, &msg).unwrap();
         writeln!(self.writer).unwrap();
+        self.writer.flush().unwrap();
     }
 }
 
