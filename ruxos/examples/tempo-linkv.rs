@@ -155,10 +155,10 @@ fn main() {
     });
 
     let handle = replica.handle();
-    runtime.spawn(async move {
+    runtime.spawn_blocking(move || {
         let mut node_msg_rx = node_msg_rx;
 
-        while let Some(msg) = node_msg_rx.recv().await {
+        while let Some(msg) = node_msg_rx.blocking_recv() {
             match msg {
                 OutputMessage::Res {
                     src_msg,
