@@ -83,7 +83,10 @@ where
     }
 
     /// Submits the Operation to the cluster
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, op, nodes)))]
     pub async fn submit(&self, op: O, nodes: BTreeSet<NodeId>) -> Result<O::Result, SubmitError> {
+        tracing::debug!("Submitting Operation");
+
         let op_id = OpId {
             node: self.node.clone(),
             counter: self.counter.fetch_add(1, Ordering::Relaxed),
@@ -105,6 +108,10 @@ where
             .send(InternalMessage::IPC(ipc::IPCRequest::Submit(submit)))
             .map_err(|_e| SubmitError::SendingMessageToCluster)?;
 
-        wait_rx.await.map_err(|_e| SubmitError::ReceivingResult)
+        let res = wait_rx.await.map_err(|_e| SubmitError::ReceivingResult)?;
+
+        tracing::debug!("Finished Operation");
+
+        Ok(res)
     }
 }
