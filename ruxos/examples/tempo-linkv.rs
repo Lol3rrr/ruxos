@@ -5,6 +5,7 @@ use std::{
 
 use opentelemetry_otlp::WithExportConfig;
 use ruxos::tempo::{self, replica::Broadcaster};
+use tracing::subscriber;
 use tracing_subscriber::{Registry, prelude::__tracing_subscriber_SubscriberExt};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -87,11 +88,18 @@ enum OutputMessage {
 }
 
 fn main() {
-    let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://tempo.service.consul:4317")).install_batch(opentelemetry::runtime::Tokio).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = runtime.block_on(async move {
+        let tracer = opentelemetry_otlp::new_pipeline().tracing().with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://tempo.service.consul:4317")).install_batch(opentelemetry::runtime::Tokio).unwrap();
 
-    let subscriber = Registry::default().with(telemetry);
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        Registry::default().with(telemetry)
+    });
 
     /*
     tracing::subscriber::set_global_default(
@@ -126,11 +134,6 @@ fn main() {
                 (tx, rx),
             )
         })
-        .unwrap();
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
         .unwrap();
 
     let handle = replica.handle();
