@@ -32,6 +32,14 @@ pub enum SubmitError {
     ReceivingResult,
 }
 
+pub struct TryExecuteHandle {
+    rx: tokio::sync::oneshot::Receiver<()>,
+}
+
+pub struct PromisesHandle {
+    rx: tokio::sync::oneshot::Receiver<()>,
+}
+
 impl<O, NodeId, T> Handle<O, NodeId, T, O::Result>
 where
     NodeId: Clone + Ord + PartialEq,
@@ -42,23 +50,32 @@ where
     }
 
     /// Starts an execution attempt
-    pub fn try_execute(&self) {
+    pub fn try_execute(&self) -> TryExecuteHandle {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
         let _ = self
             .tx
             .send(InternalMessage::IPC(ipc::IPCRequest::TryExecute(
-                ipc::TryExecute {},
+                ipc::TryExecute { tx },
             )));
+
+        TryExecuteHandle { rx }
     }
 
     /// Initiate sending the Promises to the other nodes in the system:
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    pub fn promises(&self) {
+    pub fn promises(&self) -> PromisesHandle {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
         let _ = self.tx.send(InternalMessage::IPC(ipc::IPCRequest::Promises(
             ipc::Promises {
                 #[cfg(feature = "tracing")]
                 span: tracing::debug_span!(parent: tracing::Span::current(), "ipc"),
+                tx,
             },
         )));
+
+        PromisesHandle { rx }
     }
 
     /// Forwards a message received from a different Replica in the system to the replica
@@ -119,5 +136,31 @@ where
         tracing::debug!("Finished Operation");
 
         Ok(res)
+    }
+}
+
+impl core::future::Future for TryExecuteHandle {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let t = self.get_mut();
+        let tmp = core::pin::pin!(&mut t.rx);
+        tmp.poll(cx).map(|_| ())
+    }
+}
+
+impl core::future::Future for PromisesHandle {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let t = self.get_mut();
+        let tmp = core::pin::pin!(&mut t.rx);
+        tmp.poll(cx).map(|_| ())
     }
 }

@@ -47,7 +47,9 @@ where
 }
 
 #[derive(Debug)]
-pub struct TryExecute {}
+pub struct TryExecute {
+    pub tx: tokio::sync::oneshot::Sender<()>,
+}
 
 #[derive(Debug)]
 pub struct LivenessCheck {}
@@ -56,4 +58,5 @@ pub struct LivenessCheck {}
 pub struct Promises {
     #[cfg(feature = "tracing")]
     pub span: tracing::Span,
+    pub tx: tokio::sync::oneshot::Sender<()>,
 }

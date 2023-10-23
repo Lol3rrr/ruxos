@@ -6,7 +6,7 @@ use std::{
 use opentelemetry::sdk::trace::BatchConfig;
 use opentelemetry_otlp::WithExportConfig;
 use ruxos::tempo::{self, replica::Broadcaster};
-use tracing_subscriber::{Registry, prelude::__tracing_subscriber_SubscriberExt};
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Registry};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum KVOp {
@@ -67,10 +67,13 @@ impl Broadcaster<KVOp, String> for MaelstromBroadcaster {
                 tracing::error!("Sending Message to local Node");
             }
         } else {
-            let _ = self.other.send(OutputMessageWrapper { msg: OutputMessage::Internal {
-                target: target.clone(),
-                msg: content,
-            }, span: tracing::Span::current() });
+            let _ = self.other.send(OutputMessageWrapper {
+                msg: OutputMessage::Internal {
+                    target: target.clone(),
+                    msg: content,
+                },
+                span: tracing::Span::current(),
+            });
         }
     }
 }
@@ -101,22 +104,39 @@ fn main() {
 
     #[cfg(all())]
     let subscriber = runtime.block_on(async move {
-        let tracer = opentelemetry_otlp::new_pipeline().tracing()
-            .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(oltp_addr))
-            .with_trace_config(opentelemetry_sdk::trace::config().with_resource(opentelemetry_sdk::Resource::new(vec![opentelemetry_api::KeyValue::new("service.name", "tempo-linkv")])))
-            .with_batch_config(BatchConfig::default().with_scheduled_delay(Duration::from_millis(10)).with_max_queue_size(4096))
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(
+                opentelemetry_otlp::new_exporter()
+                    .tonic()
+                    .with_endpoint(oltp_addr),
+            )
+            .with_trace_config(opentelemetry_sdk::trace::config().with_resource(
+                opentelemetry_sdk::Resource::new(vec![opentelemetry_api::KeyValue::new(
+                    "service.name",
+                    "tempo-linkv",
+                )]),
+            ))
+            .with_batch_config(
+                BatchConfig::default()
+                    .with_scheduled_delay(Duration::from_millis(10))
+                    .with_max_queue_size(4096),
+            )
             .install_batch(opentelemetry::runtime::Tokio)
             .unwrap();
 
-         tracing_opentelemetry::layer().with_tracer(tracer)
+        tracing_opentelemetry::layer().with_tracer(tracer)
     });
     #[cfg(any())]
-    let subscriber = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_ansi(false);
-            
-    
-    let subscriber = Registry::default().with(tracing_subscriber::filter::filter_fn(|span| {
+    let subscriber = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(false);
+
+    let subscriber = Registry::default()
+        .with(tracing_subscriber::filter::filter_fn(|span| {
             span.target().contains("tempo")
-        })).with(subscriber);
+        }))
+        .with(subscriber);
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
@@ -126,8 +146,12 @@ fn main() {
         maelstrom_api::init(&mut rx, &mut tx, |node, cluster| {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let replica = tempo::Builder::new().id(node.to_string()).nodes(cluster.to_vec()).accepted_failures(1).finish(HashMap::new());
-            
+            let replica = tempo::Builder::new()
+                .id(node.to_string())
+                .nodes(cluster.to_vec())
+                .accepted_failures(1)
+                .finish(HashMap::new());
+
             let handle = replica.handle();
 
             (
@@ -146,14 +170,14 @@ fn main() {
     let handle = replica.handle();
     runtime.spawn(async move {
         loop {
-            handle.try_execute();
+            handle.try_execute().await;
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     });
     let handle = replica.handle();
     runtime.spawn(async move {
         loop {
-            handle.promises();
+            handle.promises().await;
             tokio::time::sleep(Duration::from_millis(4)).await;
         }
     });
@@ -223,7 +247,7 @@ fn main() {
                     let nodes = node_clone.clone();
                     let src_node = tmp.src().to_string();
                     let src_msg_id = tmp.body().id().unwrap();
-                    
+
                     runtime_handle.spawn(async move {
                         let quorum = nodes.clone();
 
@@ -252,7 +276,7 @@ fn main() {
         let mut broadcaster = broadcaster;
 
         loop {
-            match replica.process( &mut broadcaster).await {
+            match replica.process(&mut broadcaster).await {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::error!("Error Processing: {:?}", e);

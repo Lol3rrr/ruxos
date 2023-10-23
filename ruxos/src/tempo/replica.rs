@@ -394,11 +394,13 @@ where
 
                 Ok(())
             }
-            ipc::IPCRequest::TryExecute(_execute) => {
+            ipc::IPCRequest::TryExecute(execute) => {
                 let mut nodes: Vec<_> = self.cluster.iter().cloned().collect();
                 nodes.sort();
 
                 self.try_execute(&nodes);
+
+                let _ = execute.tx.send(());
 
                 Ok(())
             }
@@ -424,6 +426,8 @@ where
                         msg: msgs::MessageContent::Promises(msg),
                     },
                 );
+
+                let _ = promises.tx.send(());
 
                 Ok(())
             }
@@ -519,8 +523,6 @@ where
                 };
             }
             msgs::MessageContent::Bump(bump) => {
-                return Ok(());
-
                 // We dont send any responses to bump messages so there is no nothing else to do
                 // here
                 self.recv(msg.src, bump)
@@ -1794,7 +1796,6 @@ mod tests {
 
     #[test]
     fn recv_msg_fast_path() {
-        let cluster: BTreeSet<_> = [0].into_iter().collect();
         let mut broadcaster: HashMap<_, _> = [(0, VecDeque::new())].into_iter().collect();
 
         let mut replica = Replica::<_, _, (), _>::new(0, vec![0], (), 1);
